@@ -46,6 +46,34 @@ Each table has an `account_type` column ('personal' or 'business') and a `curren
 
 Sample data is inserted on first run for both modes.
 
+## Deployment
+
+### Local SQLite (Development Only)
+- The app creates `finance.db` locally
+- Data persists between runs on the same machine
+
+### Cloud Deployment (Recommended for Production)
+
+When deploying to platforms like Streamlit Cloud, Heroku, etc., local SQLite files don't persist. To avoid creating a new database on each deployment:
+
+1. **Use a Cloud Database**:
+   - **Supabase** (free PostgreSQL): https://supabase.com
+   - **PlanetScale** (MySQL): https://planetscale.com
+   - **Railway** (PostgreSQL): https://railway.app
+   - **SQLite Cloud**: https://sqlitecloud.io
+
+2. **Set Environment Variable**:
+   - Set `DATABASE_URL` environment variable to your database connection string
+   - Example: `DATABASE_URL=postgresql://user:pass@host:port/dbname`
+
+3. **For Streamlit Cloud**:
+   - Go to your app dashboard → Settings → Secrets
+   - Add: `DATABASE_URL = "your_connection_string"`
+
+4. **Update Database Code** (if using PostgreSQL/MySQL):
+   - Modify `database.py` to use the appropriate database driver
+   - Install additional packages: `psycopg2` for PostgreSQL, `pymysql` for MySQL
+
 ## Usage
 
 - Select mode (Personal or Business) in the sidebar.

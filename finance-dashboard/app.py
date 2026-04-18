@@ -62,8 +62,13 @@ def show_login_form(conn):
     if st.session_state.get("auth_error"):
         st.error(st.session_state.auth_error)
 
+import os
+
+# Database configuration
+DB_URL = os.getenv("DATABASE_URL", "finance.db")  # Use environment variable or default to local file
+
 # Connect to database
-conn = create_connection("finance.db")
+conn = create_connection(DB_URL)
 if conn:
     create_tables(conn)
     create_users_table(conn)
