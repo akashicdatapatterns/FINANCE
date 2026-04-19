@@ -1,3 +1,4 @@
+import io
 import os
 import sqlite3
 import hashlib
@@ -150,6 +151,74 @@ def authenticate_user(conn, username, password):
     if user and verify_password(password, user['password_hash']):
         return user
     return None
+
+
+def import_excel_to_db(conn, excel_file, behavior="append"):
+    expected_sheets = {
+        "income": ["source", "amount", "currency", "date", "type", "account_type"],
+        "expenses": ["category", "amount", "currency", "date", "account_type"],
+        "investments": ["category", "name", "invested_amount", "current_value", "currency", "date_purchased", "account_type"],
+        "fixed_deposits": ["bank", "principal", "interest_rate", "maturity_date", "maturity_value", "currency", "account_type"],
+        "real_estate": ["property_name", "purchase_price", "current_value", "rental_income", "currency", "account_type"],
+        "cash": ["amount", "currency", "date", "account_type"]
+    }
+
+    try:
+        workbook = pd.read_excel(excel_file, sheet_name=None)
+    except Exception as e:
+        raise ValueError(f"Unable to read Excel file: {e}")
+
+    inserted = []
+    for table_name, required_cols in expected_sheets.items():
+        if table_name not in workbook:
+            continue
+
+        df = workbook[table_name].copy()
+        if df.empty:
+            continue
+
+        missing_columns = [col for col in required_cols if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Sheet '{table_name}' is missing required columns: {', '.join(missing_columns)}")
+
+        df = df[required_cols]
+        if "account_type" not in df.columns:
+            df["account_type"] = "personal"
+
+        if behavior == "replace":
+            conn.execute(f"DELETE FROM {table_name}")
+
+        placeholders = ",".join(["?" for _ in required_cols])
+        insert_sql = f"INSERT INTO {table_name} ({', '.join(required_cols)}) VALUES ({placeholders})"
+        records = [tuple(row[col] for col in required_cols) for _, row in df.iterrows()]
+
+        if records:
+            conn.executemany(insert_sql, records)
+            inserted.append((table_name, len(records)))
+
+    if not inserted:
+        raise ValueError("No supported sheets were found in the uploaded workbook.")
+
+    conn.commit()
+    return inserted
+
+
+def export_db_to_excel(conn):
+    tables = [
+        "income",
+        "expenses",
+        "investments",
+        "fixed_deposits",
+        "real_estate",
+        "cash"
+    ]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for table_name in tables:
+            df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+            df.to_excel(writer, sheet_name=table_name, index=False)
+    output.seek(0)
+    return output.getvalue()
 
 
 def insert_sample_data(conn):

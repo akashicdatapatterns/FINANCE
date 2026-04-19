@@ -1,8 +1,9 @@
+import io
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, get_data, calculate_net_worth, calculate_income_expenses
+from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses
 from datetime import datetime
 
 # Page config
@@ -26,6 +27,14 @@ def format_currency(amount, currency):
     symbols = {'USD': '$', 'EUR': '€', 'INR': '₹'}
     symbol = symbols.get(currency, currency)
     return f"{symbol}{amount:,.2f}"
+
+
+def maybe_rerun():
+    rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if rerun_fn:
+        rerun_fn()
+    else:
+        st.info("Please refresh the page to apply the latest data.")
 
 
 def init_session_state():
@@ -106,7 +115,7 @@ display_currency = st.sidebar.selectbox("Display Currency", ["USD", "EUR", "INR"
 st.title("Personal Finance Dashboard")
 
 # Tabs for sections
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["Overview", "Income Tracking", "Expenses Tracking", "Investments", "Fixed Deposits", "Real Estate", "Fund Allocation", "Insights", "Filters"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(["Overview", "Income Tracking", "Expenses Tracking", "Investments", "Fixed Deposits", "Real Estate", "Fund Allocation", "Insights", "Filters", "Upload", "Cash"])
 
 with tab1:
     st.header(f"{mode} Overview")
@@ -446,6 +455,60 @@ with tab9:
         else:
             st.write("No real estate data available")
 
+with tab10:
+    st.header("Bulk Excel Upload")
+    st.write("Upload a `.xlsx` workbook with sheets named `income`, `expenses`, `investments`, `fixed_deposits`, `real_estate`, and `cash`.")
+    st.markdown("**Required columns per sheet:**")
+    st.markdown(
+        "- `income`: source, amount, currency, date, type, account_type<br>"
+        "- `expenses`: category, amount, currency, date, account_type<br>"
+        "- `investments`: category, name, invested_amount, current_value, currency, date_purchased, account_type<br>"
+        "- `fixed_deposits`: bank, principal, interest_rate, maturity_date, maturity_value, currency, account_type<br>"
+        "- `real_estate`: property_name, purchase_price, current_value, rental_income, currency, account_type<br>"
+        "- `cash`: amount, currency, date, account_type",
+        unsafe_allow_html=True,
+    )
+
+    upload_file = st.file_uploader("Upload Excel workbook", type=["xlsx"] )
+    import_mode = st.radio("Import mode", ["Append", "Replace"], index=0, horizontal=True)
+    if upload_file:
+        if st.button("Import data from Excel"):
+            try:
+                inserted = import_excel_to_db(conn, upload_file, behavior=import_mode.lower())
+                for table_name, count in inserted:
+                    st.success(f"Imported {count} rows into {table_name}.")
+                maybe_rerun()
+            except Exception as exc:
+                st.error(f"Upload failed: {exc}")
+
+    st.markdown("---")
+    st.subheader("Download existing data")
+    try:
+        export_bytes = export_db_to_excel(conn)
+        st.download_button(
+            label="Download current data as Excel",
+            data=export_bytes,
+            file_name="finance_data_export.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as exc:
+        st.error(f"Unable to create export file: {exc}")
+
+with tab11:
+    st.header(f"{mode} Cash Holdings")
+    cash_df = get_data(conn, "cash", account_type=account_type)
+    if not cash_df.empty:
+        display_df = cash_df.copy()
+        display_df['amount_display'] = display_df.apply(lambda x: convert_currency(x['amount'], x['currency'], display_currency), axis=1)
+        display_df['amount_formatted'] = display_df.apply(lambda x: format_currency(x['amount_display'], display_currency), axis=1)
+        st.dataframe(display_df[['date', 'amount_formatted', 'currency']])
+        
+        # Summary metrics
+        total_cash = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in cash_df.iterrows())
+        st.metric(f"Total Cash ({display_currency})", format_currency(total_cash, display_currency))
+    else:
+        st.write("No cash data available")
+
 # Add/Edit section in sidebar
 st.sidebar.header("Add/Edit Entries")
 edit_mode = st.sidebar.checkbox("Edit Mode")
@@ -478,12 +541,12 @@ if edit_mode:
                         conn.execute("UPDATE income SET source=?, amount=?, currency=?, date=?, type=? WHERE id=?", (source, amount, currency, str(date), inc_type, income_id))
                         conn.commit()
                         st.success("Income updated!")
-                        st.rerun()
+                        maybe_rerun()
                     if delete_submitted:
                         conn.execute("DELETE FROM income WHERE id=?", (income_id,))
                         conn.commit()
                         st.success("Income deleted!")
-                        st.rerun()
+                        maybe_rerun()
         else:
             st.sidebar.write("No income entries to edit")
     
@@ -511,12 +574,12 @@ if edit_mode:
                         conn.execute("UPDATE expenses SET category=?, amount=?, currency=?, date=? WHERE id=?", (category, amount, currency, str(date), expense_id))
                         conn.commit()
                         st.success("Expense updated!")
-                        st.rerun()
+                        maybe_rerun()
                     if delete_submitted:
                         conn.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
                         conn.commit()
                         st.success("Expense deleted!")
-                        st.rerun()
+                        maybe_rerun()
         else:
             st.sidebar.write("No expense entries to edit")
     
@@ -546,12 +609,12 @@ if edit_mode:
                         conn.execute("UPDATE investments SET category=?, name=?, invested_amount=?, current_value=?, currency=?, date_purchased=? WHERE id=?", (category, name, invested_amount, current_value, currency, str(date_purchased), inv_id))
                         conn.commit()
                         st.success("Investment updated!")
-                        st.rerun()
+                        maybe_rerun()
                     if delete_submitted:
                         conn.execute("DELETE FROM investments WHERE id=?", (inv_id,))
                         conn.commit()
                         st.success("Investment deleted!")
-                        st.rerun()
+                        maybe_rerun()
         else:
             st.sidebar.write("No investment entries to edit")
     
@@ -581,12 +644,12 @@ if edit_mode:
                         conn.execute("UPDATE fixed_deposits SET bank=?, principal=?, interest_rate=?, maturity_date=?, maturity_value=?, currency=? WHERE id=?", (bank, principal, interest_rate, str(maturity_date), maturity_value, currency, fd_id))
                         conn.commit()
                         st.success("Fixed Deposit updated!")
-                        st.rerun()
+                        maybe_rerun()
                     if delete_submitted:
                         conn.execute("DELETE FROM fixed_deposits WHERE id=?", (fd_id,))
                         conn.commit()
                         st.success("Fixed Deposit deleted!")
-                        st.rerun()
+                        maybe_rerun()
         else:
             st.sidebar.write("No fixed deposit entries to edit")
     
@@ -615,12 +678,12 @@ if edit_mode:
                         conn.execute("UPDATE real_estate SET property_name=?, purchase_price=?, current_value=?, rental_income=?, currency=? WHERE id=?", (property_name, purchase_price, current_value, rental_income, currency, re_id))
                         conn.commit()
                         st.success("Real Estate updated!")
-                        st.rerun()
+                        maybe_rerun()
                     if delete_submitted:
                         conn.execute("DELETE FROM real_estate WHERE id=?", (re_id,))
                         conn.commit()
                         st.success("Real Estate deleted!")
-                        st.rerun()
+                        maybe_rerun()
         else:
             st.sidebar.write("No real estate entries to edit")
     
@@ -647,12 +710,12 @@ if edit_mode:
                         conn.execute("UPDATE cash SET amount=?, currency=?, date=? WHERE id=?", (amount, currency, str(date), cash_id))
                         conn.commit()
                         st.success("Cash updated!")
-                        st.rerun()
+                        maybe_rerun()
                     if delete_submitted:
                         conn.execute("DELETE FROM cash WHERE id=?", (cash_id,))
                         conn.commit()
                         st.success("Cash deleted!")
-                        st.rerun()
+                        maybe_rerun()
         else:
             st.sidebar.write("No cash entries to edit")
 
@@ -670,7 +733,7 @@ else:
                 conn.execute("INSERT INTO income (source, amount, currency, date, type, account_type) VALUES (?, ?, ?, ?, ?, ?)", (source, amount, currency, str(date), inc_type, account_type))
                 conn.commit()
                 st.success("Income added!")
-                st.rerun()
+                maybe_rerun()
     elif entry_type == "Expense":
         with st.sidebar.form("add_expense"):
             category = st.text_input("Category")
@@ -682,7 +745,7 @@ else:
                 conn.execute("INSERT INTO expenses (category, amount, currency, date, account_type) VALUES (?, ?, ?, ?, ?)", (category, amount, currency, str(date), account_type))
                 conn.commit()
                 st.success("Expense added!")
-                st.rerun()
+                maybe_rerun()
     elif entry_type == "Investment":
         with st.sidebar.form("add_investment"):
             category = st.selectbox("Category", ["Stocks", "Mutual Funds", "Crypto", "Bonds", "Other"])
@@ -696,7 +759,7 @@ else:
                 conn.execute("INSERT INTO investments (category, name, invested_amount, current_value, currency, date_purchased, account_type) VALUES (?, ?, ?, ?, ?, ?, ?)", (category, name, invested_amount, current_value, currency, str(date_purchased), account_type))
                 conn.commit()
                 st.success("Investment added!")
-                st.rerun()
+                maybe_rerun()
     elif entry_type == "Fixed Deposit":
         with st.sidebar.form("add_fd"):
             bank = st.text_input("Bank Name")
@@ -710,7 +773,7 @@ else:
                 conn.execute("INSERT INTO fixed_deposits (bank, principal, interest_rate, maturity_date, maturity_value, currency, account_type) VALUES (?, ?, ?, ?, ?, ?, ?)", (bank, principal, interest_rate, str(maturity_date), maturity_value, currency, account_type))
                 conn.commit()
                 st.success("Fixed Deposit added!")
-                st.rerun()
+                maybe_rerun()
     elif entry_type == "Real Estate":
         with st.sidebar.form("add_re"):
             property_name = st.text_input("Property Name")
@@ -723,7 +786,7 @@ else:
                 conn.execute("INSERT INTO real_estate (property_name, purchase_price, current_value, rental_income, currency, account_type) VALUES (?, ?, ?, ?, ?, ?)", (property_name, purchase_price, current_value, rental_income, currency, account_type))
                 conn.commit()
                 st.success("Real Estate added!")
-                st.rerun()
+                maybe_rerun()
     elif entry_type == "Cash":
         with st.sidebar.form("add_cash"):
             amount = st.number_input("Amount", min_value=0.0)
@@ -734,7 +797,7 @@ else:
                 conn.execute("INSERT INTO cash (amount, currency, date, account_type) VALUES (?, ?, ?, ?)", (amount, currency, str(date), account_type))
                 conn.commit()
                 st.success("Cash added!")
-                st.rerun()
+                maybe_rerun()
 
 # Add similar for others, but for brevity, only two examples
 # Similarly for others, but for brevity, only one example

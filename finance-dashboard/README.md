@@ -75,6 +75,11 @@ When deploying to platforms like Streamlit Cloud, Heroku, etc., local SQLite fil
    - Install additional packages: `psycopg2` for PostgreSQL, `pymysql` for MySQL
 
 ## Usage
+### Bulk Excel upload
+- A template file is included: `excel_upload_template.xlsx`
+- Use sheets named `income`, `expenses`, `investments`, `fixed_deposits`, `real_estate`, and `cash`
+- Upload the workbook on the `Upload` tab in the app
+- Choose `Append` or `Replace` mode for your import
 
 - Select mode (Personal or Business) in the sidebar.
 - Navigate through tabs for different sections.
