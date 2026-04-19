@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import hashlib
 import pandas as pd
@@ -124,6 +125,11 @@ def get_user(conn, username):
     return df.iloc[0].to_dict()
 
 
+def get_env_password(username, default_password):
+    env_key = f"{username.upper()}_PASSWORD"
+    return os.getenv(env_key, default_password)
+
+
 def insert_default_users(conn):
     try:
         user_count = pd.read_sql_query("SELECT COUNT(*) FROM users", conn).iloc[0, 0]
@@ -131,9 +137,9 @@ def insert_default_users(conn):
         user_count = 0
     if user_count == 0:
         default_users = [
-            ('admin', hash_password('admin123'), 'admin'),
-            ('personal', hash_password('personal123'), 'personal'),
-            ('business', hash_password('business123'), 'business')
+            ('admin', hash_password(get_env_password('admin', 'admin123')), 'admin'),
+            ('personal', hash_password(get_env_password('personal', 'personal123')), 'personal'),
+            ('business', hash_password(get_env_password('business', 'business123')), 'business')
         ]
         conn.executemany("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", default_users)
         conn.commit()

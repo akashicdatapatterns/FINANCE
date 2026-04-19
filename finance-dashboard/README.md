@@ -85,11 +85,16 @@ When deploying to platforms like Streamlit Cloud, Heroku, etc., local SQLite fil
 
 ## Login
 
-The app now requires login before the dashboard is visible. Default credentials are:
+The app now requires login before the dashboard is visible.
 
-- `admin` / `admin123`
-- `personal` / `personal123`
-- `business` / `business123`
+To keep login credentials out of public GitHub:
+
+- Store passwords in a local `.env` file or platform secret store.
+- Add `.env` to `.gitignore` so it is never committed.
+- Use environment variables such as `ADMIN_PASSWORD`, `PERSONAL_PASSWORD`, and `BUSINESS_PASSWORD`.
+- For deployed apps, use GitHub Secrets, Streamlit secrets, or your host's secure secret store.
+
+The repository includes `.env.example` as a template. Copy it to `.env` and set your own passwords.
 
 ## Technologies
 

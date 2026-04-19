@@ -63,6 +63,9 @@ def show_login_form(conn):
         st.error(st.session_state.auth_error)
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Database configuration
 DB_URL = os.getenv("DATABASE_URL", "finance.db")  # Use environment variable or default to local file
