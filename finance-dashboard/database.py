@@ -197,18 +197,16 @@ def get_env_password(username, default_password):
 
 
 def insert_default_users(conn):
-    try:
-        user_count = pd.read_sql_query("SELECT COUNT(*) FROM users", conn).iloc[0, 0]
-    except Exception:
-        user_count = 0
-    if user_count == 0:
-        default_users = [
-            ('admin', hash_password(get_env_password('admin', 'admin123')), 'admin'),
-            ('personal', hash_password(get_env_password('personal', 'personal123')), 'personal'),
-            ('business', hash_password(get_env_password('business', 'business123')), 'business')
-        ]
-        conn.executemany("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", default_users)
-        conn.commit()
+    default_users = [
+        ('admin', hash_password(get_env_password('admin', 'admin123')), 'admin'),
+        ('personal', hash_password(get_env_password('personal', 'personal123')), 'personal'),
+        ('business', hash_password(get_env_password('business', 'business123')), 'business')
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        default_users
+    )
+    conn.commit()
 
 
 def authenticate_user(conn, username, password):
