@@ -3,3 +3,9 @@ pandas
 plotly
 python-dotenv
 openpyxl
+xlrd>=2.0.1
+pdfplumber
+
+# Testing
+pytest>=8.0
+pytest-mock

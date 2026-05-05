@@ -23,7 +23,8 @@ def create_tables(conn):
         currency TEXT DEFAULT 'USD',
         date TEXT NOT NULL,
         type TEXT NOT NULL,
-        account_type TEXT DEFAULT 'personal'
+        account_type TEXT DEFAULT 'personal',
+        user_id TEXT DEFAULT NULL
     );
     """
     sql_create_expenses_table = """
@@ -33,7 +34,8 @@ def create_tables(conn):
         amount REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
         date TEXT NOT NULL,
-        account_type TEXT DEFAULT 'personal'
+        account_type TEXT DEFAULT 'personal',
+        user_id TEXT DEFAULT NULL
     );
     """
     sql_create_investments_table = """
@@ -45,7 +47,8 @@ def create_tables(conn):
         current_value REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
         date_purchased TEXT NOT NULL,
-        account_type TEXT DEFAULT 'personal'
+        account_type TEXT DEFAULT 'personal',
+        user_id TEXT DEFAULT NULL
     );
     """
     sql_create_fixed_deposits_table = """
@@ -57,7 +60,8 @@ def create_tables(conn):
         maturity_date TEXT NOT NULL,
         maturity_value REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
-        account_type TEXT DEFAULT 'personal'
+        account_type TEXT DEFAULT 'personal',
+        user_id TEXT DEFAULT NULL
     );
     """
     sql_create_real_estate_table = """
@@ -68,7 +72,8 @@ def create_tables(conn):
         current_value REAL NOT NULL,
         rental_income REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
-        account_type TEXT DEFAULT 'personal'
+        account_type TEXT DEFAULT 'personal',
+        user_id TEXT DEFAULT NULL
     );
     """
     sql_create_cash_table = """
@@ -77,7 +82,25 @@ def create_tables(conn):
         amount REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
         date TEXT NOT NULL,
-        account_type TEXT DEFAULT 'personal'
+        account_type TEXT DEFAULT 'personal',
+        user_id TEXT DEFAULT NULL
+    );
+    """
+    sql_create_bank_statements_table = """
+    CREATE TABLE IF NOT EXISTS bank_statements (
+        id INTEGER PRIMARY KEY,
+        bank_name TEXT NOT NULL,
+        txn_date TEXT NOT NULL,
+        description TEXT,
+        category TEXT,
+        income_amount REAL DEFAULT 0,
+        expense_amount REAL DEFAULT 0,
+        net_amount REAL DEFAULT 0,
+        currency TEXT DEFAULT 'USD',
+        source_name TEXT,
+        account_type TEXT DEFAULT 'personal',
+        created_at TEXT NOT NULL,
+        user_id TEXT DEFAULT NULL
     );
     """
     try:
@@ -88,9 +111,26 @@ def create_tables(conn):
         c.execute(sql_create_fixed_deposits_table)
         c.execute(sql_create_real_estate_table)
         c.execute(sql_create_cash_table)
+        c.execute(sql_create_bank_statements_table)
         conn.commit()
     except sqlite3.Error as e:
         print(e)
+
+
+def migrate_add_user_id(conn):
+    """Safely add user_id column to all existing tables (no-op if already present)."""
+    tables = ['income', 'expenses', 'investments', 'fixed_deposits', 'real_estate', 'cash', 'bank_statements']
+    for table in tables:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT DEFAULT NULL")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+
+def get_all_usernames(conn):
+    df = pd.read_sql_query("SELECT username FROM users ORDER BY username", conn)
+    return df['username'].tolist()
 
 
 def hash_password(password):
@@ -107,7 +147,15 @@ def create_users_table(conn):
         id INTEGER PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
-        role TEXT DEFAULT 'user'
+        role TEXT DEFAULT 'user',
+        first_name TEXT DEFAULT '',
+        last_name TEXT DEFAULT '',
+        date_of_birth TEXT DEFAULT '',
+        email TEXT DEFAULT '',
+        phone TEXT DEFAULT '',
+        country TEXT DEFAULT '',
+        security_question TEXT DEFAULT '',
+        security_answer_hash TEXT DEFAULT ''
     );
     """
     try:
@@ -116,6 +164,23 @@ def create_users_table(conn):
         conn.commit()
     except sqlite3.Error as e:
         print(e)
+    # Migrate existing tables that lack the new columns
+    new_cols = [
+        ("first_name", "TEXT DEFAULT ''"),
+        ("last_name", "TEXT DEFAULT ''"),
+        ("date_of_birth", "TEXT DEFAULT ''"),
+        ("email", "TEXT DEFAULT ''"),
+        ("phone", "TEXT DEFAULT ''"),
+        ("country", "TEXT DEFAULT ''"),
+        ("security_question", "TEXT DEFAULT ''"),
+        ("security_answer_hash", "TEXT DEFAULT ''"),
+    ]
+    for col, col_type in new_cols:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type}")
+            conn.commit()
+        except sqlite3.Error:
+            pass  # Column already exists
 
 
 def get_user(conn, username):
@@ -151,6 +216,122 @@ def authenticate_user(conn, username, password):
     if user and verify_password(password, user['password_hash']):
         return user
     return None
+
+
+def register_user(conn, username, password, first_name='', last_name='',
+                  date_of_birth='', email='', phone='', country='',
+                  security_question='', security_answer=''):
+    """Create a new user account with role 'user'.
+    Returns (True, '') on success or (False, error_message) on failure."""
+    if not username or not password:
+        return False, "Username and password are required."
+    if len(username) < 3:
+        return False, "Username must be at least 3 characters."
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    if not first_name.strip():
+        return False, "First name is required."
+    if not last_name.strip():
+        return False, "Last name is required."
+    if not email.strip() or '@' not in email:
+        return False, "A valid email address is required."
+    if not security_question or not security_answer.strip():
+        return False, "Security question and answer are required for password recovery."
+    existing = get_user(conn, username)
+    if existing:
+        return False, f"Username '{username}' is already taken."
+    try:
+        conn.execute(
+            """INSERT INTO users
+               (username, password_hash, role, first_name, last_name,
+                date_of_birth, email, phone, country,
+                security_question, security_answer_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                username.strip(), hash_password(password), 'user',
+                first_name.strip(), last_name.strip(),
+                date_of_birth, email.strip().lower(), phone.strip(), country.strip(),
+                security_question, hash_password(security_answer.strip().lower())
+            )
+        )
+        conn.commit()
+        return True, ""
+    except sqlite3.Error as e:
+        return False, str(e)
+
+
+def get_user_by_email(conn, email):
+    """Return user dict by email, or None."""
+    df = pd.read_sql_query("SELECT * FROM users WHERE email = ?", conn,
+                           params=(email.strip().lower(),))
+    if df.empty:
+        return None
+    return df.iloc[0].to_dict()
+
+
+def verify_security_answer(conn, username, answer):
+    """Return True if the supplied answer matches the stored hash."""
+    user = get_user(conn, username)
+    if not user or not user.get('security_answer_hash'):
+        return False
+    return verify_password(answer.strip().lower(), user['security_answer_hash'])
+
+
+def reset_user_password(conn, username, new_password):
+    """Update the password for an existing user."""
+    conn.execute("UPDATE users SET password_hash = ? WHERE username = ?",
+                 (hash_password(new_password), username))
+    conn.commit()
+
+
+def update_user_profile(conn, username, first_name, last_name, date_of_birth,
+                        email, phone='', country='', security_question='',
+                        security_answer=''):
+    """Update profile details for an existing user.
+    Returns (True, '') on success or (False, error_message) on failure."""
+    if not first_name.strip():
+        return False, "First name is required."
+    if not last_name.strip():
+        return False, "Last name is required."
+    if not email.strip() or '@' not in email:
+        return False, "A valid email address is required."
+
+    user = get_user(conn, username)
+    if not user:
+        return False, "User not found."
+
+    try:
+        if security_answer.strip():
+            conn.execute(
+                """UPDATE users
+                   SET first_name = ?, last_name = ?, date_of_birth = ?,
+                       email = ?, phone = ?, country = ?,
+                       security_question = ?, security_answer_hash = ?
+                   WHERE username = ?""",
+                (
+                    first_name.strip(), last_name.strip(), str(date_of_birth),
+                    email.strip().lower(), phone.strip(), country.strip(),
+                    security_question, hash_password(security_answer.strip().lower()),
+                    username,
+                )
+            )
+        else:
+            conn.execute(
+                """UPDATE users
+                   SET first_name = ?, last_name = ?, date_of_birth = ?,
+                       email = ?, phone = ?, country = ?,
+                       security_question = ?
+                   WHERE username = ?""",
+                (
+                    first_name.strip(), last_name.strip(), str(date_of_birth),
+                    email.strip().lower(), phone.strip(), country.strip(),
+                    security_question, username,
+                )
+            )
+        conn.commit()
+        return True, ""
+    except sqlite3.Error as e:
+        return False, str(e)
 
 
 def import_excel_to_db(conn, excel_file, behavior="append"):
@@ -289,91 +470,181 @@ def insert_sample_data(conn):
 
     conn.commit()
 
-def get_data(conn, table, date_filter=None, account_type=None):
+def get_data(conn, table, date_filter=None, account_type=None, user_id=None):
     query = f"SELECT * FROM {table}"
     conditions = []
+    params = []
     if date_filter:
-        conditions.append(f"date >= '{date_filter}'")
+        conditions.append("date >= ?")
+        params.append(date_filter)
     if account_type:
-        conditions.append(f"account_type = '{account_type}'")
+        conditions.append("account_type = ?")
+        params.append(account_type)
+    if user_id:
+        conditions.append("user_id = ?")
+        params.append(user_id)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=params if params else None)
     return df
 
-def calculate_net_worth(conn, account_type=None):
-    # Exchange rates (base USD)
-    EXCHANGE_RATES = {
-        'USD': 1.0,
-        'EUR': 0.85,
-        'INR': 83.0
-    }
-    
+def calculate_net_worth(conn, account_type=None, user_id=None):
+    EXCHANGE_RATES = {'USD': 1.0, 'EUR': 0.8537, 'INR': 95.11}  # last updated 2026-05-04
+
+    def build_where(base_conditions, base_params):
+        conds = list(base_conditions)
+        params = list(base_params)
+        if account_type:
+            conds.append("account_type = ?")
+            params.append(account_type)
+        if user_id:
+            conds.append("user_id = ?")
+            params.append(user_id)
+        return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
     def convert_to_usd(amount, currency):
         return amount / EXCHANGE_RATES.get(currency, 1.0)
-    
-    # Investments
-    inv_query = "SELECT current_value, currency FROM investments"
-    if account_type:
-        inv_query += f" WHERE account_type = '{account_type}'"
-    inv_df = pd.read_sql_query(inv_query, conn)
-    inv = sum(convert_to_usd(row['current_value'], row['currency']) for _, row in inv_df.iterrows())
-    
-    # FD
-    fd_query = "SELECT maturity_value, currency FROM fixed_deposits"
-    if account_type:
-        fd_query += f" WHERE account_type = '{account_type}'"
-    fd_df = pd.read_sql_query(fd_query, conn)
-    fd = sum(convert_to_usd(row['maturity_value'], row['currency']) for _, row in fd_df.iterrows())
-    
-    # Real Estate
-    re_query = "SELECT current_value, currency FROM real_estate"
-    if account_type:
-        re_query += f" WHERE account_type = '{account_type}'"
-    re_df = pd.read_sql_query(re_query, conn)
-    re = sum(convert_to_usd(row['current_value'], row['currency']) for _, row in re_df.iterrows())
-    
-    # Cash
-    cash_query = "SELECT amount, currency FROM cash"
-    if account_type:
-        cash_query += f" WHERE account_type = '{account_type}'"
-    cash_df = pd.read_sql_query(cash_query, conn)
-    cash = sum(convert_to_usd(row['amount'], row['currency']) for _, row in cash_df.iterrows())
-    
+
+    where, params = build_where([], [])
+    inv_df = pd.read_sql_query("SELECT current_value, currency FROM investments" + where, conn, params=params or None)
+    inv = sum(convert_to_usd(r['current_value'], r['currency']) for _, r in inv_df.iterrows())
+
+    fd_df = pd.read_sql_query("SELECT maturity_value, currency FROM fixed_deposits" + where, conn, params=params or None)
+    fd = sum(convert_to_usd(r['maturity_value'], r['currency']) for _, r in fd_df.iterrows())
+
+    re_df = pd.read_sql_query("SELECT current_value, currency FROM real_estate" + where, conn, params=params or None)
+    re = sum(convert_to_usd(r['current_value'], r['currency']) for _, r in re_df.iterrows())
+
+    cash_df = pd.read_sql_query("SELECT amount, currency FROM cash" + where, conn, params=params or None)
+    cash = sum(convert_to_usd(r['amount'], r['currency']) for _, r in cash_df.iterrows())
+
     return inv + fd + re + cash
 
-def calculate_income_expenses(conn, period='monthly', account_type=None):
-    # Exchange rates (base USD)
-    EXCHANGE_RATES = {
-        'USD': 1.0,
-        'EUR': 0.85,
-        'INR': 90.0
-    }
-    
+def calculate_income_expenses(conn, period='monthly', account_type=None, user_id=None):
+    EXCHANGE_RATES = {'USD': 1.0, 'EUR': 0.8537, 'INR': 95.11}  # last updated 2026-05-04
+
     def convert_to_usd(amount, currency):
         return amount / EXCHANGE_RATES.get(currency, 1.0)
-    
+
     now = datetime.now()
     if period == 'monthly':
         start = now.replace(day=1).strftime('%Y-%m-%d')
     elif period == 'yearly':
         start = now.replace(month=1, day=1).strftime('%Y-%m-%d')
     else:
-        start = '2023-01-01'
+        start = '2000-01-01'
 
-    income_query = f"SELECT amount, currency FROM income WHERE date >= '{start}'"
-    expenses_query = f"SELECT amount, currency FROM expenses WHERE date >= '{start}'"
+    conditions = ["date >= ?"]
+    params = [start]
     if account_type:
-        income_query += f" AND account_type = '{account_type}'"
-        expenses_query += f" AND account_type = '{account_type}'"
-    
-    income_df = pd.read_sql_query(income_query, conn)
-    expenses_df = pd.read_sql_query(expenses_query, conn)
-    
-    income = sum(convert_to_usd(row['amount'], row['currency']) for _, row in income_df.iterrows())
-    expenses = sum(convert_to_usd(row['amount'], row['currency']) for _, row in expenses_df.iterrows())
-    
+        conditions.append("account_type = ?")
+        params.append(account_type)
+    if user_id:
+        conditions.append("user_id = ?")
+        params.append(user_id)
+    where = " WHERE " + " AND ".join(conditions)
+
+    income_df = pd.read_sql_query("SELECT amount, currency FROM income" + where, conn, params=params)
+    expenses_df = pd.read_sql_query("SELECT amount, currency FROM expenses" + where, conn, params=params)
+
+    income = sum(convert_to_usd(r['amount'], r['currency']) for _, r in income_df.iterrows())
+    expenses = sum(convert_to_usd(r['amount'], r['currency']) for _, r in expenses_df.iterrows())
+
     savings_rate = ((income - expenses) / income * 100) if income > 0 else 0
     return income, expenses, savings_rate
+
+
+def save_bank_statement_rows(conn, bank_name, source_name, currency, account_type, parsed_df, replace_existing=False, user_id=None):
+    if parsed_df.empty:
+        raise ValueError("No parsed bank statement rows to save.")
+
+    if replace_existing:
+        if user_id:
+            conn.execute(
+                "DELETE FROM bank_statements WHERE bank_name = ? AND account_type = ? AND user_id = ?",
+                (bank_name, account_type, user_id)
+            )
+        else:
+            conn.execute(
+                "DELETE FROM bank_statements WHERE bank_name = ? AND account_type = ?",
+                (bank_name, account_type)
+            )
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    rows = []
+    for _, row in parsed_df.iterrows():
+        rows.append((
+            bank_name,
+            pd.to_datetime(row['date']).strftime('%Y-%m-%d'),
+            str(row.get('description', '')),
+            str(row.get('category', 'Other')),
+            float(row.get('income_amount', 0) or 0),
+            float(row.get('expense_amount', 0) or 0),
+            float(row.get('net_amount', 0) or 0),
+            currency,
+            source_name,
+            account_type,
+            created_at,
+            user_id
+        ))
+
+    conn.executemany(
+        """
+        INSERT INTO bank_statements (
+            bank_name, txn_date, description, category, income_amount, expense_amount,
+            net_amount, currency, source_name, account_type, created_at, user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_bank_statement_data(conn, account_type=None, user_id=None):
+    query = "SELECT * FROM bank_statements"
+    conditions = []
+    params = []
+    if account_type:
+        conditions.append("account_type = ?")
+        params.append(account_type)
+    if user_id:
+        conditions.append("user_id = ?")
+        params.append(user_id)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY txn_date DESC, id DESC"
+    return pd.read_sql_query(query, conn, params=params if params else None)
+
+
+def update_bank_statement_categories(conn, category_updates):
+    if not category_updates:
+        return 0
+
+    normalized_updates = []
+    for row_id, category in category_updates:
+        normalized_updates.append((str(category or "Other").strip() or "Other", int(row_id)))
+
+    conn.executemany(
+        "UPDATE bank_statements SET category = ? WHERE id = ?",
+        normalized_updates
+    )
+    conn.commit()
+    return len(normalized_updates)
+
+
+def delete_bank_statement_rows(conn, row_ids):
+    if not row_ids:
+        return 0
+
+    normalized_ids = [int(row_id) for row_id in row_ids]
+    placeholders = ",".join(["?" for _ in normalized_ids])
+    cursor = conn.cursor()
+    cursor.execute(
+        f"DELETE FROM bank_statements WHERE id IN ({placeholders})",
+        normalized_ids
+    )
+    conn.commit()
+    return cursor.rowcount
 
 # Add more functions as needed
