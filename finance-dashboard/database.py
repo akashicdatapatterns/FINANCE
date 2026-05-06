@@ -332,7 +332,7 @@ def update_user_profile(conn, username, first_name, last_name, date_of_birth,
         return False, str(e)
 
 
-def import_excel_to_db(conn, excel_file, behavior="append"):
+def import_excel_to_db(conn, excel_file, behavior="append", user_id=None):
     expected_sheets = {
         "income": ["source", "amount", "currency", "date", "type", "account_type"],
         "expenses": ["category", "amount", "currency", "date", "account_type"],
@@ -360,16 +360,24 @@ def import_excel_to_db(conn, excel_file, behavior="append"):
         if missing_columns:
             raise ValueError(f"Sheet '{table_name}' is missing required columns: {', '.join(missing_columns)}")
 
-        df = df[required_cols]
+        df = df[required_cols].copy()
         if "account_type" not in df.columns:
             df["account_type"] = "personal"
 
-        if behavior == "replace":
-            conn.execute(f"DELETE FROM {table_name}")
+        # Always stamp the importing user's id so the rows are visible to them
+        df["user_id"] = user_id
 
-        placeholders = ",".join(["?" for _ in required_cols])
-        insert_sql = f"INSERT INTO {table_name} ({', '.join(required_cols)}) VALUES ({placeholders})"
-        records = [tuple(row[col] for col in required_cols) for _, row in df.iterrows()]
+        insert_cols = required_cols + ["user_id"]
+
+        if behavior == "replace":
+            if user_id:
+                conn.execute(f"DELETE FROM {table_name} WHERE user_id = ?", (user_id,))
+            else:
+                conn.execute(f"DELETE FROM {table_name}")
+
+        placeholders = ",".join(["?" for _ in insert_cols])
+        insert_sql = f"INSERT INTO {table_name} ({', '.join(insert_cols)}) VALUES ({placeholders})"
+        records = [tuple(row[col] for col in insert_cols) for _, row in df.iterrows()]
 
         if records:
             conn.executemany(insert_sql, records)
@@ -382,7 +390,7 @@ def import_excel_to_db(conn, excel_file, behavior="append"):
     return inserted
 
 
-def export_db_to_excel(conn):
+def export_db_to_excel(conn, account_type=None, user_id=None):
     tables = [
         "income",
         "expenses",
@@ -394,77 +402,90 @@ def export_db_to_excel(conn):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for table_name in tables:
-            df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+            conditions = []
+            params = []
+            if account_type:
+                conditions.append("account_type = ?")
+                params.append(account_type)
+            if user_id:
+                conditions.append("user_id = ?")
+                params.append(user_id)
+            where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+            df = pd.read_sql_query(
+                f"SELECT * FROM {table_name}{where}",
+                conn,
+                params=params if params else None
+            )
             df.to_excel(writer, sheet_name=table_name, index=False)
     output.seek(0)
     return output.getvalue()
 
 
-def insert_sample_data(conn):
+def insert_sample_data(conn, user_id=None):
     # Sample income - personal
     income_data = [
-        ('Salary', 5000, 'USD', '2023-01-01', 'salary', 'personal'),
-        ('Freelance', 1000, 'USD', '2023-01-15', 'side', 'personal'),
-        ('Dividend', 200, 'USD', '2023-01-20', 'passive', 'personal'),
-        ('Salary', 5000, 'USD', '2023-02-01', 'salary', 'personal'),
-        ('Freelance', 1200, 'USD', '2023-02-15', 'side', 'personal'),
+        ('Salary', 5000, 'USD', '2023-01-01', 'salary', 'personal', user_id),
+        ('Freelance', 1000, 'USD', '2023-01-15', 'side', 'personal', user_id),
+        ('Dividend', 200, 'USD', '2023-01-20', 'passive', 'personal', user_id),
+        ('Salary', 5000, 'USD', '2023-02-01', 'salary', 'personal', user_id),
+        ('Freelance', 1200, 'USD', '2023-02-15', 'side', 'personal', user_id),
         # Business
-        ('Sales Revenue', 10000, 'USD', '2023-01-01', 'revenue', 'business'),
-        ('Service Income', 5000, 'USD', '2023-01-15', 'service', 'business'),
-        ('Sales Revenue', 12000, 'USD', '2023-02-01', 'revenue', 'business'),
+        ('Sales Revenue', 10000, 'USD', '2023-01-01', 'revenue', 'business', user_id),
+        ('Service Income', 5000, 'USD', '2023-01-15', 'service', 'business', user_id),
+        ('Sales Revenue', 12000, 'USD', '2023-02-01', 'revenue', 'business', user_id),
     ]
-    conn.executemany("INSERT INTO income (source, amount, currency, date, type, account_type) VALUES (?, ?, ?, ?, ?, ?)", income_data)
+    conn.executemany("INSERT INTO income (source, amount, currency, date, type, account_type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)", income_data)
 
     # Sample expenses - personal
     expenses_data = [
-        ('Food', 800, 'USD', '2023-01-01', 'personal'),
-        ('Rent', 1500, 'USD', '2023-01-01', 'personal'),
-        ('Utilities', 200, 'USD', '2023-01-01', 'personal'),
-        ('Food', 850, 'USD', '2023-02-01', 'personal'),
-        ('Rent', 1500, 'USD', '2023-02-01', 'personal'),
+        ('Food', 800, 'USD', '2023-01-01', 'personal', user_id),
+        ('Rent', 1500, 'USD', '2023-01-01', 'personal', user_id),
+        ('Utilities', 200, 'USD', '2023-01-01', 'personal', user_id),
+        ('Food', 850, 'USD', '2023-02-01', 'personal', user_id),
+        ('Rent', 1500, 'USD', '2023-02-01', 'personal', user_id),
         # Business
-        ('Office Rent', 2000, 'USD', '2023-01-01', 'business'),
-        ('Marketing', 1000, 'USD', '2023-01-15', 'business'),
-        ('Supplies', 500, 'USD', '2023-02-01', 'business'),
+        ('Office Rent', 2000, 'USD', '2023-01-01', 'business', user_id),
+        ('Marketing', 1000, 'USD', '2023-01-15', 'business', user_id),
+        ('Supplies', 500, 'USD', '2023-02-01', 'business', user_id),
     ]
-    conn.executemany("INSERT INTO expenses (category, amount, currency, date, account_type) VALUES (?, ?, ?, ?, ?)", expenses_data)
+    conn.executemany("INSERT INTO expenses (category, amount, currency, date, account_type, user_id) VALUES (?, ?, ?, ?, ?, ?)", expenses_data)
 
     # Sample investments - personal
     investments_data = [
-        ('Stocks', 'AAPL', 10000, 12000, 'USD', '2022-01-01', 'personal'),
-        ('Mutual Funds', 'Vanguard', 5000, 5500, 'USD', '2022-06-01', 'personal'),
-        ('Crypto', 'BTC', 2000, 2500, 'USD', '2023-01-01', 'personal'),
+        ('Stocks', 'AAPL', 10000, 12000, 'USD', '2022-01-01', 'personal', user_id),
+        ('Mutual Funds', 'Vanguard', 5000, 5500, 'USD', '2022-06-01', 'personal', user_id),
+        ('Crypto', 'BTC', 2000, 2500, 'USD', '2023-01-01', 'personal', user_id),
         # Business
-        ('Equipment', 'Machinery', 20000, 18000, 'USD', '2022-01-01', 'business'),
-        ('Inventory', 'Stock', 5000, 6000, 'USD', '2023-01-01', 'business'),
+        ('Equipment', 'Machinery', 20000, 18000, 'USD', '2022-01-01', 'business', user_id),
+        ('Inventory', 'Stock', 5000, 6000, 'USD', '2023-01-01', 'business', user_id),
     ]
-    conn.executemany("INSERT INTO investments (category, name, invested_amount, current_value, currency, date_purchased, account_type) VALUES (?, ?, ?, ?, ?, ?, ?)", investments_data)
+    conn.executemany("INSERT INTO investments (category, name, invested_amount, current_value, currency, date_purchased, account_type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", investments_data)
 
     # Sample fixed deposits - personal
     fd_data = [
-        ('Bank A', 10000, 5.0, '2025-01-01', 10500, 'USD', 'personal'),
-        ('Bank B', 15000, 4.5, '2024-06-01', 15750, 'USD', 'personal'),
+        ('Bank A', 10000, 5.0, '2025-01-01', 10500, 'USD', 'personal', user_id),
+        ('Bank B', 15000, 4.5, '2024-06-01', 15750, 'USD', 'personal', user_id),
         # Business
-        ('Corp Bank', 50000, 6.0, '2025-01-01', 53000, 'USD', 'business'),
+        ('Corp Bank', 50000, 6.0, '2025-01-01', 53000, 'USD', 'business', user_id),
     ]
-    conn.executemany("INSERT INTO fixed_deposits (bank, principal, interest_rate, maturity_date, maturity_value, currency, account_type) VALUES (?, ?, ?, ?, ?, ?, ?)", fd_data)
+    conn.executemany("INSERT INTO fixed_deposits (bank, principal, interest_rate, maturity_date, maturity_value, currency, account_type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", fd_data)
 
     # Sample real estate - personal
     re_data = [
-        ('Apartment 1', 200000, 250000, 2000, 'USD', 'personal'),
-        ('House', 300000, 350000, 0, 'USD', 'personal'),
+        ('Apartment 1', 200000, 250000, 2000, 'USD', 'personal', user_id),
+        ('House', 300000, 350000, 0, 'USD', 'personal', user_id),
         # Business
-        ('Office Building', 500000, 600000, 10000, 'USD', 'business'),
+        ('Office Building', 500000, 600000, 10000, 'USD', 'business', user_id),
     ]
-    conn.executemany("INSERT INTO real_estate (property_name, purchase_price, current_value, rental_income, currency, account_type) VALUES (?, ?, ?, ?, ?, ?)", re_data)
+    conn.executemany("INSERT INTO real_estate (property_name, purchase_price, current_value, rental_income, currency, account_type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)", re_data)
 
     # Sample cash - personal
     cash_data = [
-        (5000, 'USD', '2023-01-01', 'personal'),
+        (5000, 'USD', '2023-01-01', 'personal', user_id),
         # Business
-        (10000, 'USD', '2023-01-01', 'business'),
+        (10000, 'USD', '2023-01-01', 'business', user_id),
     ]
-    conn.executemany("INSERT INTO cash (amount, currency, date, account_type) VALUES (?, ?, ?, ?)", cash_data)
+    conn.executemany("INSERT INTO cash (amount, currency, date, account_type, user_id) VALUES (?, ?, ?, ?, ?)", cash_data)
 
     conn.commit()
 
@@ -631,17 +652,23 @@ def update_bank_statement_categories(conn, category_updates):
     return len(normalized_updates)
 
 
-def delete_bank_statement_rows(conn, row_ids):
+def delete_bank_statement_rows(conn, row_ids, user_id=None):
     if not row_ids:
         return 0
 
     normalized_ids = [int(row_id) for row_id in row_ids]
     placeholders = ",".join(["?" for _ in normalized_ids])
     cursor = conn.cursor()
-    cursor.execute(
-        f"DELETE FROM bank_statements WHERE id IN ({placeholders})",
-        normalized_ids
-    )
+    if user_id:
+        cursor.execute(
+            f"DELETE FROM bank_statements WHERE id IN ({placeholders}) AND user_id = ?",
+            normalized_ids + [user_id]
+        )
+    else:
+        cursor.execute(
+            f"DELETE FROM bank_statements WHERE id IN ({placeholders})",
+            normalized_ids
+        )
     conn.commit()
     return cursor.rowcount
 

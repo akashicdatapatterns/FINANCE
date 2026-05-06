@@ -691,6 +691,7 @@ def show_login_form(conn):
                     st.session_state.user_id = user['username']
                     st.session_state.auth_error = ""
                     st.session_state.reg_success = ""
+                    maybe_rerun()
                 else:
                     st.session_state.auth_error = "Invalid username or password"
         if st.session_state.get("auth_error"):
@@ -906,9 +907,9 @@ if conn:
     migrate_add_user_id(conn)
     create_users_table(conn)
     insert_default_users(conn)
-    # Check if data exists, if not insert sample
+    # Check if data exists; if not, seed sample data attributed to the admin account
     if pd.read_sql_query("SELECT COUNT(*) FROM income", conn).iloc[0, 0] == 0:
-        insert_sample_data(conn)
+        insert_sample_data(conn, user_id='admin')
 else:
     st.error("Failed to connect to database")
     st.stop()
@@ -1386,7 +1387,7 @@ if selected_page == "Upload":
         if st.button("Import data from Excel"):
             try:
                 validate_upload(upload_file, max_mb=10)
-                inserted = import_excel_to_db(conn, upload_file, behavior=import_mode.lower())
+                inserted = import_excel_to_db(conn, upload_file, behavior=import_mode.lower(), user_id=st.session_state.user_id)
                 for table_name, count in inserted:
                     st.success(f"Imported {count} rows into {table_name}.")
                 maybe_rerun()
@@ -1396,9 +1397,15 @@ if selected_page == "Upload":
     st.markdown("---")
     st.subheader("Download existing data")
     try:
-        export_bytes = export_db_to_excel(conn)
+        # Admins can download all data; regular users download only their own
+        if is_admin:
+            export_bytes = export_db_to_excel(conn)
+            download_label = "Download all data as Excel"
+        else:
+            export_bytes = export_db_to_excel(conn, account_type=account_type, user_id=st.session_state.user_id)
+            download_label = "Download my data as Excel"
         st.download_button(
-            label="Download current data as Excel",
+            label=download_label,
             data=export_bytes,
             file_name="finance_data_export.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1728,7 +1735,7 @@ if selected_page == "Bank Insights":
                     elif not confirm_delete:
                         st.warning("Please confirm deletion before proceeding.")
                     else:
-                        deleted_count = delete_bank_statement_rows(conn, selected_row_ids)
+                        deleted_count = delete_bank_statement_rows(conn, selected_row_ids, user_id=user_id)
                         st.success(f"Deleted {deleted_count} banking row(s).")
                         maybe_rerun()
 
@@ -1863,17 +1870,55 @@ if entry_type:
                 disabled=["id"],
             )
 
-            selected_edit_rows = edited_grid.loc[edited_grid["select_for_edit"]]
-            selected_delete_ids = edited_grid.loc[edited_grid["select_for_delete"], "id"].tolist()
+            # Read current selections from the grid
+            _edit_rows_now = edited_grid.loc[edited_grid["select_for_edit"]]
+            _delete_ids_now = edited_grid.loc[edited_grid["select_for_delete"], "id"].tolist()
+
+            # Persist to session_state so a confirm-checkbox rerun can't lose them
+            _edit_key = f"_sel_edit_{entry_type}"
+            _del_key  = f"_sel_del_{entry_type}"
+            if not _edit_rows_now.empty:
+                st.session_state[_edit_key] = _edit_rows_now
+            elif _edit_key not in st.session_state:
+                st.session_state[_edit_key] = _edit_rows_now
+            if _delete_ids_now:
+                st.session_state[_del_key] = _delete_ids_now
+            elif _del_key not in st.session_state:
+                st.session_state[_del_key] = _delete_ids_now
+
+            selected_edit_rows  = st.session_state[_edit_key]
+            selected_delete_ids = st.session_state[_del_key]
+            _pending_update_key = f"_pending_update_{entry_type}"
+            _pending_update_retry_key = f"_pending_update_retry_{entry_type}"
 
             a1, a2 = st.columns(2)
             with a1:
                 if st.button(f"Update Selected {entry_type}", key=f"update_selected_{entry_type}"):
+                    # Use a pending flag to make update single-click reliable even when
+                    # the data editor is still syncing the last in-cell edit.
+                    st.session_state[_pending_update_key] = True
+                    st.session_state[_pending_update_retry_key] = 0
+                    maybe_rerun()
+
+                if st.session_state.get(_pending_update_key, False):
                     if selected_edit_rows.empty:
-                        st.warning("Select at least one row in the Edit column.")
+                        retries = int(st.session_state.get(_pending_update_retry_key, 0))
+                        if retries < 1:
+                            # One extra rerun gives data_editor checkbox/cell edits time to sync.
+                            st.session_state[_pending_update_retry_key] = retries + 1
+                            maybe_rerun()
+                        else:
+                            st.session_state[_pending_update_key] = False
+                            st.session_state[_pending_update_retry_key] = 0
+                            st.warning("Select at least one row in the Edit column.")
                     else:
+                        st.session_state[_pending_update_key] = False
+                        st.session_state[_pending_update_retry_key] = 0
                         set_clause = ", ".join([f"{f}=?" for f in fields])
-                        update_sql = f"UPDATE {table_name} SET {set_clause} WHERE id=?"
+                        if user_id:
+                            update_sql = f"UPDATE {table_name} SET {set_clause} WHERE id=? AND user_id=?"
+                        else:
+                            update_sql = f"UPDATE {table_name} SET {set_clause} WHERE id=?"
                         updated_count = 0
                         for _, row in selected_edit_rows.iterrows():
                             values = []
@@ -1882,10 +1927,14 @@ if entry_type:
                                 if f in date_fields and pd.notna(val):
                                     val = str(val)
                                 values.append(val)
-                            conn.execute(update_sql, tuple(values + [int(row["id"])]))
+                            if user_id:
+                                conn.execute(update_sql, tuple(values + [int(row["id"]), user_id]))
+                            else:
+                                conn.execute(update_sql, tuple(values + [int(row["id"])]))
                             updated_count += 1
                         conn.commit()
                         st.success(f"Updated {updated_count} row(s).")
+                        st.session_state.pop(_edit_key, None)
                         maybe_rerun()
 
             with a2:
@@ -1900,9 +1949,17 @@ if entry_type:
                         st.warning("Please confirm deletion before proceeding.")
                     else:
                         placeholders = ",".join(["?"] * len(selected_delete_ids))
-                        conn.execute(f"DELETE FROM {table_name} WHERE id IN ({placeholders})", tuple(int(v) for v in selected_delete_ids))
+                        ids = tuple(int(v) for v in selected_delete_ids)
+                        if user_id:
+                            conn.execute(
+                                f"DELETE FROM {table_name} WHERE id IN ({placeholders}) AND user_id = ?",
+                                ids + (user_id,)
+                            )
+                        else:
+                            conn.execute(f"DELETE FROM {table_name} WHERE id IN ({placeholders})", ids)
                         conn.commit()
                         st.success(f"Deleted {len(selected_delete_ids)} row(s).")
+                        st.session_state.pop(_del_key, None)
                         maybe_rerun()
 
     else:
