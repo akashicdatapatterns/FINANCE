@@ -900,9 +900,16 @@ load_dotenv()
 # Database configuration
 DB_URL = os.getenv("DATABASE_URL", "finance.db")  # Use environment variable or default to local file
 
-# Connect to database
-conn = create_connection(DB_URL)
-if conn:
+def _create_and_initialize_connection(db_url):
+    conn = create_connection(db_url)
+    if not conn:
+        st.error("Failed to connect to database")
+        db_err = get_last_connection_error()
+        if db_err:
+            st.caption(f"Connection details: {db_err}")
+        st.info("For Supabase URLs, use an encoded password (for example * becomes %2A) and verify host/port/user from the Supabase connection string page.")
+        st.stop()
+
     try:
         create_tables(conn)
         migrate_add_user_id(conn)
@@ -915,13 +922,14 @@ if conn:
         st.error("Database connected but initialization failed")
         st.caption(f"Initialization details: {safe_error_message(e)}")
         st.stop()
-else:
-    st.error("Failed to connect to database")
-    db_err = get_last_connection_error()
-    if db_err:
-        st.caption(f"Connection details: {db_err}")
-    st.info("For Supabase URLs, use an encoded password (for example * becomes %2A) and verify host/port/user from the Supabase connection string page.")
-    st.stop()
+    return conn
+
+
+if st.session_state.get("db_conn") is None or st.session_state.get("db_url") != DB_URL:
+    st.session_state.db_conn = _create_and_initialize_connection(DB_URL)
+    st.session_state.db_url = DB_URL
+
+conn = st.session_state.db_conn
 
 init_session_state()
 logout_clicked = st.sidebar.button("Logout")
@@ -2055,5 +2063,4 @@ if entry_type:
                     st.success("Cash added!")
                     maybe_rerun()
 
-if conn:
-    conn.close()
+# Keep the connection alive across Streamlit reruns for better performance.
