@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import pdfplumber
-from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, register_user, get_user, get_user_by_email, verify_security_answer, reset_user_password, update_user_profile, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses, save_bank_statement_rows, get_bank_statement_data, update_bank_statement_categories, delete_bank_statement_rows, migrate_add_user_id, get_all_usernames
+from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, register_user, get_user, get_user_by_email, verify_security_answer, reset_user_password, update_user_profile, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses, save_bank_statement_rows, get_bank_statement_data, update_bank_statement_categories, delete_bank_statement_rows, migrate_add_user_id, get_all_usernames, get_last_connection_error
 from datetime import datetime, date as dt_date
 
 # Page config
@@ -912,6 +912,10 @@ if conn:
         insert_sample_data(conn, user_id='admin')
 else:
     st.error("Failed to connect to database")
+    db_err = get_last_connection_error()
+    if db_err:
+        st.caption(f"Connection details: {db_err}")
+    st.info("For Supabase URLs, use an encoded password (for example * becomes %2A) and verify host/port/user from the Supabase connection string page.")
     st.stop()
 
 init_session_state()

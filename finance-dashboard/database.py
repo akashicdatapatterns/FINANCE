@@ -2,6 +2,7 @@ import io
 import os
 import sqlite3
 import hashlib
+import re
 import pandas as pd
 from datetime import datetime
 
@@ -12,6 +13,26 @@ try:
     _SQLALCHEMY_AVAILABLE = True
 except ImportError:
     _SQLALCHEMY_AVAILABLE = False
+
+
+_LAST_CONNECTION_ERROR = None
+
+
+def _set_last_connection_error(err):
+    global _LAST_CONNECTION_ERROR
+    _LAST_CONNECTION_ERROR = _sanitize_connection_error(err)
+
+
+def _sanitize_connection_error(err):
+    if err is None:
+        return None
+    msg = str(err)
+    # Redact credentials that may appear in URLs.
+    return re.sub(r"://([^:@/]+):([^@/]+)@", r"://\1:***@", msg)
+
+
+def get_last_connection_error():
+    return _LAST_CONNECTION_ERROR
 
 
 class _PgConnection:
@@ -112,6 +133,8 @@ def create_connection(db_file):
     SQLAlchemy is available, returns a _PgConnection wrapping a SQLAlchemy engine.
     Otherwise falls back to a plain sqlite3 connection.
     """
+    _set_last_connection_error(None)
+
     # PostgreSQL path
     if _SQLALCHEMY_AVAILABLE and db_file and db_file.startswith("postgres"):
         # Streamlit Cloud sets DATABASE_URL as postgres://… but SQLAlchemy 2.x
@@ -121,8 +144,12 @@ def create_connection(db_file):
             engine = create_engine(url, pool_pre_ping=True)
             return _PgConnection(engine)
         except Exception as e:
+            _set_last_connection_error(e)
             print(f"PostgreSQL connection failed: {e}")
             return None
+    elif db_file and db_file.startswith("postgres") and not _SQLALCHEMY_AVAILABLE:
+        _set_last_connection_error("SQLAlchemy is not installed in this environment")
+        return None
 
     # SQLite path (default)
     conn = None
@@ -130,6 +157,7 @@ def create_connection(db_file):
         conn = sqlite3.connect(db_file)
         conn.execute("PRAGMA busy_timeout = 30000")
     except sqlite3.Error as e:
+        _set_last_connection_error(e)
         print(e)
     return conn
 
