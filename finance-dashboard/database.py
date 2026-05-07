@@ -3,6 +3,7 @@ import os
 import sqlite3
 import hashlib
 import re
+import time
 import pandas as pd
 from datetime import datetime
 
@@ -39,6 +40,30 @@ def safe_error_message(err):
     return _sanitize_connection_error(err)
 
 
+def _query_debug_enabled():
+    return str(os.getenv("DB_QUERY_LOG", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _slow_query_threshold_ms():
+    raw = str(os.getenv("DB_SLOW_QUERY_MS", "250")).strip()
+    try:
+        return max(1.0, float(raw))
+    except Exception:
+        return 250.0
+
+
+def _normalize_sql_for_log(sql):
+    return " ".join(str(sql).split())[:220]
+
+
+def _log_query_timing(sql, elapsed_ms, rowcount=None):
+    if not _query_debug_enabled():
+        return
+    level = "SLOW" if elapsed_ms >= _slow_query_threshold_ms() else "FAST"
+    row_info = "" if rowcount is None else f" rows={rowcount}"
+    print(f"DB_QUERY [{level}] {elapsed_ms:.1f}ms{row_info} sql={_normalize_sql_for_log(sql)}")
+
+
 class _PgConnection:
     """Thin wrapper that makes a SQLAlchemy engine behave like a sqlite3 connection
     for the limited subset of operations used in this codebase:
@@ -63,17 +88,26 @@ class _PgConnection:
     def execute(self, sql, params=None):
         # Convert SQLite-style ? placeholders to :p0, :p1, … for SQLAlchemy
         bound_sql, bound_params = _adapt_sql(sql, params)
+        start = time.perf_counter()
         with self._engine.begin() as c:
-            c.execute(sa_text(bound_sql), bound_params or {})
+            result = c.execute(sa_text(bound_sql), bound_params or {})
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        _log_query_timing(sql, elapsed_ms, result.rowcount)
 
     def executemany(self, sql, rows):
         if not rows:
             return
         bound_sql, _ = _adapt_sql(sql, rows[0])
+        batch_params = []
+        for row in rows:
+            _, bound_params = _adapt_sql(sql, row)
+            batch_params.append(bound_params)
+        start = time.perf_counter()
         with self._engine.begin() as c:
-            for row in rows:
-                _, bound_params = _adapt_sql(sql, row)
-                c.execute(sa_text(bound_sql), bound_params)
+            # Execute as a single batch to reduce network round trips on hosted Postgres.
+            result = c.execute(sa_text(bound_sql), batch_params)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        _log_query_timing(sql, elapsed_ms, result.rowcount)
 
     def commit(self):
         pass  # SQLAlchemy uses autocommit inside begin() blocks
@@ -94,9 +128,12 @@ class _PgCursor:
 
     def execute(self, sql, params=None):
         bound_sql, bound_params = _adapt_sql(sql, params)
+        start = time.perf_counter()
         with self._engine.begin() as c:
             result = c.execute(sa_text(bound_sql), bound_params or {})
             self.rowcount = result.rowcount
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        _log_query_timing(sql, elapsed_ms, self.rowcount)
 
 
 def _adapt_sql(sql, params):
@@ -191,10 +228,18 @@ def db_read_sql(sql, conn, params=None):
     """
     if _is_postgres(conn):
         adapted_sql, bound_params = _adapt_sql(sql, params)
+        start = time.perf_counter()
         with conn._engine.connect() as c:
-            return pd.read_sql_query(sa_text(adapted_sql), c,
-                                     params=bound_params if bound_params else None)
-    return pd.read_sql_query(sql, conn, params=params)
+            df = pd.read_sql_query(sa_text(adapted_sql), c,
+                                   params=bound_params if bound_params else None)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        _log_query_timing(sql, elapsed_ms, len(df.index))
+        return df
+    start = time.perf_counter()
+    df = pd.read_sql_query(sql, conn, params=params)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    _log_query_timing(sql, elapsed_ms, len(df.index))
+    return df
 
 
 def create_tables(conn):
@@ -287,6 +332,15 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
+    sql_create_indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_income_user_account_date ON income(user_id, account_type, date)",
+        "CREATE INDEX IF NOT EXISTS idx_expenses_user_account_date ON expenses(user_id, account_type, date)",
+        "CREATE INDEX IF NOT EXISTS idx_investments_user_account ON investments(user_id, account_type)",
+        "CREATE INDEX IF NOT EXISTS idx_fixed_deposits_user_account ON fixed_deposits(user_id, account_type)",
+        "CREATE INDEX IF NOT EXISTS idx_real_estate_user_account ON real_estate(user_id, account_type)",
+        "CREATE INDEX IF NOT EXISTS idx_cash_user_account_date ON cash(user_id, account_type, date)",
+        "CREATE INDEX IF NOT EXISTS idx_bank_statements_user_account_date ON bank_statements(user_id, account_type, txn_date)",
+    ]
     try:
         c = conn.cursor()
         c.execute(sql_create_income_table)
@@ -296,6 +350,8 @@ def create_tables(conn):
         c.execute(sql_create_real_estate_table)
         c.execute(sql_create_cash_table)
         c.execute(sql_create_bank_statements_table)
+        for idx_sql in sql_create_indexes:
+            c.execute(idx_sql)
         conn.commit()
     except Exception as e:
         print(e)
