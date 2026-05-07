@@ -52,27 +52,33 @@ Sample data is inserted on first run for both modes.
 - The app creates `finance.db` locally
 - Data persists between runs on the same machine
 
-### Cloud Deployment (Recommended for Production)
+### Cloud Deployment (Persistent Database)
 
-When deploying to platforms like Streamlit Cloud, Heroku, etc., local SQLite files don't persist. To avoid creating a new database on each deployment:
+Streamlit Cloud and most PaaS platforms use an **ephemeral filesystem** — `finance.db` is wiped on every redeploy or container restart. To keep data permanently, point `DATABASE_URL` to an external PostgreSQL database.
 
-1. **Use a Cloud Database**:
-   - **Supabase** (free PostgreSQL): https://supabase.com
-   - **PlanetScale** (MySQL): https://planetscale.com
-   - **Railway** (PostgreSQL): https://railway.app
-   - **SQLite Cloud**: https://sqlitecloud.io
+**Supported free PostgreSQL providers:**
 
-2. **Set Environment Variable**:
-   - Set `DATABASE_URL` environment variable to your database connection string
-   - Example: `DATABASE_URL=postgresql://user:pass@host:port/dbname`
+| Provider | Notes |
+|----------|-------|
+| [Supabase](https://supabase.com) | Free tier, generous limits |
+| [Neon](https://neon.tech) | Serverless Postgres, generous free tier |
+| [Railway](https://railway.app) | $5 credit / month free |
 
-3. **For Streamlit Cloud**:
-   - Go to your app dashboard → Settings → Secrets
-   - Add: `DATABASE_URL = "your_connection_string"`
+**Steps for Streamlit Cloud:**
+1. Create a free PostgreSQL database at one of the providers above.
+2. Copy the connection string (starts with `postgresql://` or `postgres://`).
+3. In your Streamlit Cloud app → **Settings → Secrets**, add:
+   ```toml
+   DATABASE_URL = "postgresql://user:password@host:5432/dbname"
+   ```
+4. Redeploy — the app will connect to PostgreSQL automatically. Tables are created on first run.
 
-4. **Update Database Code** (if using PostgreSQL/MySQL):
-   - Modify `database.py` to use the appropriate database driver
-   - Install additional packages: `psycopg2` for PostgreSQL, `pymysql` for MySQL
+> No code changes are required. The app auto-detects PostgreSQL vs SQLite from the `DATABASE_URL` value.
+
+**Local `.env` for development:**
+```
+DATABASE_URL=finance.db
+```
 
 ## Usage
 ### Bulk Excel upload

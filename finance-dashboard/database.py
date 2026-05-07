@@ -5,19 +5,164 @@ import hashlib
 import pandas as pd
 from datetime import datetime
 
+# SQLAlchemy is used when DATABASE_URL points to PostgreSQL (cloud deployments).
+# For local SQLite usage the standard sqlite3 module is used directly.
+try:
+    from sqlalchemy import create_engine, text as sa_text
+    _SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    _SQLALCHEMY_AVAILABLE = False
+
+
+class _PgConnection:
+    """Thin wrapper that makes a SQLAlchemy engine behave like a sqlite3 connection
+    for the limited subset of operations used in this codebase:
+      conn.execute(sql, params)  -> executes a single parameterised statement
+      conn.executemany(sql, rows)
+      conn.commit()              -> no-op (autocommit via begin())
+      pd.read_sql_query(sql, conn, params=...)  -> works natively with engine
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+
+    # Allow pd.read_sql_query to use this object directly as a connection
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+
+    # Make pandas happy — it checks for a 'cursor' or uses the object as a DBAPI conn
+    @property
+    def _engine_ref(self):
+        return self._engine
+
+    def execute(self, sql, params=None):
+        # Convert SQLite-style ? placeholders to :p0, :p1, … for SQLAlchemy
+        bound_sql, bound_params = _adapt_sql(sql, params)
+        with self._engine.begin() as c:
+            c.execute(sa_text(bound_sql), bound_params or {})
+
+    def executemany(self, sql, rows):
+        if not rows:
+            return
+        bound_sql, _ = _adapt_sql(sql, rows[0])
+        with self._engine.begin() as c:
+            for row in rows:
+                _, bound_params = _adapt_sql(sql, row)
+                c.execute(sa_text(bound_sql), bound_params)
+
+    def commit(self):
+        pass  # SQLAlchemy uses autocommit inside begin() blocks
+
+    def cursor(self):
+        return _PgCursor(self._engine)
+
+    def close(self):
+        self._engine.dispose()
+
+
+class _PgCursor:
+    """Minimal cursor-like wrapper for operations that use cursor.execute + rowcount."""
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.rowcount = 0
+
+    def execute(self, sql, params=None):
+        bound_sql, bound_params = _adapt_sql(sql, params)
+        with self._engine.begin() as c:
+            result = c.execute(sa_text(bound_sql), bound_params or {})
+            self.rowcount = result.rowcount
+
+
+def _adapt_sql(sql, params):
+    """Convert SQLite ? placeholders and INSERT OR IGNORE to PostgreSQL syntax."""
+    # INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+    adapted = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO").replace(
+        "INSERT OR IGNORE", "INSERT"
+    )
+    if "INSERT INTO" in adapted and "ON CONFLICT" not in adapted and "OR IGNORE" not in sql:
+        pass  # normal insert
+    elif "INSERT OR IGNORE" in sql:
+        adapted = adapted.rstrip().rstrip(")") + ") ON CONFLICT DO NOTHING"
+
+    if not params:
+        return adapted, {}
+
+    items = list(params)
+    bound = {}
+    idx = 0
+    result = []
+    i = 0
+    while i < len(adapted):
+        if adapted[i] == '?' and idx < len(items):
+            key = f"p{idx}"
+            bound[key] = items[idx]
+            result.append(f":{key}")
+            idx += 1
+        else:
+            result.append(adapted[i])
+        i += 1
+    return "".join(result), bound
+
+
 def create_connection(db_file):
+    """Return a connection for either SQLite (local) or PostgreSQL (cloud).
+
+    When db_file looks like a PostgreSQL URL (starts with 'postgres') and
+    SQLAlchemy is available, returns a _PgConnection wrapping a SQLAlchemy engine.
+    Otherwise falls back to a plain sqlite3 connection.
+    """
+    # PostgreSQL path
+    if _SQLALCHEMY_AVAILABLE and db_file and db_file.startswith("postgres"):
+        # Streamlit Cloud sets DATABASE_URL as postgres://… but SQLAlchemy 2.x
+        # requires postgresql://…
+        url = db_file.replace("postgres://", "postgresql://", 1)
+        try:
+            engine = create_engine(url, pool_pre_ping=True)
+            return _PgConnection(engine)
+        except Exception as e:
+            print(f"PostgreSQL connection failed: {e}")
+            return None
+
+    # SQLite path (default)
     conn = None
     try:
         conn = sqlite3.connect(db_file)
-        conn.execute("PRAGMA busy_timeout = 30000")  # Wait up to 30 seconds for lock to release
+        conn.execute("PRAGMA busy_timeout = 30000")
     except sqlite3.Error as e:
         print(e)
     return conn
 
+
+def _is_postgres(conn):
+    """Return True when conn is a PostgreSQL (_PgConnection) connection."""
+    return isinstance(conn, _PgConnection)
+
+
+def _pk(conn):
+    """Return the correct auto-increment primary key DDL for this connection type."""
+    return "SERIAL PRIMARY KEY" if _is_postgres(conn) else "INTEGER PRIMARY KEY"
+
+
+def db_read_sql(sql, conn, params=None):
+    """Execute a SELECT query and return a DataFrame.
+
+    Works with both a sqlite3 connection (params as tuple) and a _PgConnection
+    (converts ? placeholders to :pN named params for SQLAlchemy).
+    """
+    if _is_postgres(conn):
+        adapted_sql, bound_params = _adapt_sql(sql, params)
+        with conn._engine.connect() as c:
+            return pd.read_sql_query(sa_text(adapted_sql), c,
+                                     params=bound_params if bound_params else None)
+    return pd.read_sql_query(sql, conn, params=params)
+
+
 def create_tables(conn):
-    sql_create_income_table = """
+    pk = _pk(conn)
+    sql_create_income_table = f"""
     CREATE TABLE IF NOT EXISTS income (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         source TEXT NOT NULL,
         amount REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
@@ -27,9 +172,9 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
-    sql_create_expenses_table = """
+    sql_create_expenses_table = f"""
     CREATE TABLE IF NOT EXISTS expenses (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         category TEXT NOT NULL,
         amount REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
@@ -38,9 +183,9 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
-    sql_create_investments_table = """
+    sql_create_investments_table = f"""
     CREATE TABLE IF NOT EXISTS investments (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         category TEXT NOT NULL,
         name TEXT NOT NULL,
         invested_amount REAL NOT NULL,
@@ -51,9 +196,9 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
-    sql_create_fixed_deposits_table = """
+    sql_create_fixed_deposits_table = f"""
     CREATE TABLE IF NOT EXISTS fixed_deposits (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         bank TEXT NOT NULL,
         principal REAL NOT NULL,
         interest_rate REAL NOT NULL,
@@ -64,9 +209,9 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
-    sql_create_real_estate_table = """
+    sql_create_real_estate_table = f"""
     CREATE TABLE IF NOT EXISTS real_estate (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         property_name TEXT NOT NULL,
         purchase_price REAL NOT NULL,
         current_value REAL NOT NULL,
@@ -76,9 +221,9 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
-    sql_create_cash_table = """
+    sql_create_cash_table = f"""
     CREATE TABLE IF NOT EXISTS cash (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         amount REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
         date TEXT NOT NULL,
@@ -86,9 +231,9 @@ def create_tables(conn):
         user_id TEXT DEFAULT NULL
     );
     """
-    sql_create_bank_statements_table = """
+    sql_create_bank_statements_table = f"""
     CREATE TABLE IF NOT EXISTS bank_statements (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         bank_name TEXT NOT NULL,
         txn_date TEXT NOT NULL,
         description TEXT,
@@ -113,7 +258,7 @@ def create_tables(conn):
         c.execute(sql_create_cash_table)
         c.execute(sql_create_bank_statements_table)
         conn.commit()
-    except sqlite3.Error as e:
+    except Exception as e:
         print(e)
 
 
@@ -129,7 +274,7 @@ def migrate_add_user_id(conn):
 
 
 def get_all_usernames(conn):
-    df = pd.read_sql_query("SELECT username FROM users ORDER BY username", conn)
+    df = db_read_sql("SELECT username FROM users ORDER BY username", conn)
     return df['username'].tolist()
 
 
@@ -142,9 +287,10 @@ def verify_password(password, password_hash):
 
 
 def create_users_table(conn):
-    sql_create_users_table = """
+    pk = _pk(conn)
+    sql_create_users_table = f"""
     CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
+        id {pk},
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         role TEXT DEFAULT 'user',
@@ -162,7 +308,7 @@ def create_users_table(conn):
         c = conn.cursor()
         c.execute(sql_create_users_table)
         conn.commit()
-    except sqlite3.Error as e:
+    except Exception as e:
         print(e)
     # Migrate existing tables that lack the new columns
     new_cols = [
@@ -179,13 +325,13 @@ def create_users_table(conn):
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type}")
             conn.commit()
-        except sqlite3.Error:
+        except Exception:
             pass  # Column already exists
 
 
 def get_user(conn, username):
     query = "SELECT * FROM users WHERE username = ?"
-    df = pd.read_sql_query(query, conn, params=(username,))
+    df = db_read_sql(query, conn, params=(username,))
     if df.empty:
         return None
     return df.iloc[0].to_dict()
@@ -254,14 +400,14 @@ def register_user(conn, username, password, first_name='', last_name='',
         )
         conn.commit()
         return True, ""
-    except sqlite3.Error as e:
+    except Exception as e:
         return False, str(e)
 
 
 def get_user_by_email(conn, email):
     """Return user dict by email, or None."""
-    df = pd.read_sql_query("SELECT * FROM users WHERE email = ?", conn,
-                           params=(email.strip().lower(),))
+    df = db_read_sql("SELECT * FROM users WHERE email = ?", conn,
+                     params=(email.strip().lower(),))
     if df.empty:
         return None
     return df.iloc[0].to_dict()
@@ -411,7 +557,7 @@ def export_db_to_excel(conn, account_type=None, user_id=None):
                 conditions.append("user_id = ?")
                 params.append(user_id)
             where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-            df = pd.read_sql_query(
+            df = db_read_sql(
                 f"SELECT * FROM {table_name}{where}",
                 conn,
                 params=params if params else None
@@ -504,7 +650,7 @@ def get_data(conn, table, date_filter=None, account_type=None, user_id=None):
         params.append(user_id)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    df = pd.read_sql_query(query, conn, params=params if params else None)
+    df = db_read_sql(query, conn, params=params if params else None)
     return df
 
 def calculate_net_worth(conn, account_type=None, user_id=None):
@@ -525,16 +671,16 @@ def calculate_net_worth(conn, account_type=None, user_id=None):
         return amount / EXCHANGE_RATES.get(currency, 1.0)
 
     where, params = build_where([], [])
-    inv_df = pd.read_sql_query("SELECT current_value, currency FROM investments" + where, conn, params=params or None)
+    inv_df = db_read_sql("SELECT current_value, currency FROM investments" + where, conn, params=params or None)
     inv = sum(convert_to_usd(r['current_value'], r['currency']) for _, r in inv_df.iterrows())
 
-    fd_df = pd.read_sql_query("SELECT maturity_value, currency FROM fixed_deposits" + where, conn, params=params or None)
+    fd_df = db_read_sql("SELECT maturity_value, currency FROM fixed_deposits" + where, conn, params=params or None)
     fd = sum(convert_to_usd(r['maturity_value'], r['currency']) for _, r in fd_df.iterrows())
 
-    re_df = pd.read_sql_query("SELECT current_value, currency FROM real_estate" + where, conn, params=params or None)
+    re_df = db_read_sql("SELECT current_value, currency FROM real_estate" + where, conn, params=params or None)
     re = sum(convert_to_usd(r['current_value'], r['currency']) for _, r in re_df.iterrows())
 
-    cash_df = pd.read_sql_query("SELECT amount, currency FROM cash" + where, conn, params=params or None)
+    cash_df = db_read_sql("SELECT amount, currency FROM cash" + where, conn, params=params or None)
     cash = sum(convert_to_usd(r['amount'], r['currency']) for _, r in cash_df.iterrows())
 
     return inv + fd + re + cash
@@ -563,8 +709,8 @@ def calculate_income_expenses(conn, period='monthly', account_type=None, user_id
         params.append(user_id)
     where = " WHERE " + " AND ".join(conditions)
 
-    income_df = pd.read_sql_query("SELECT amount, currency FROM income" + where, conn, params=params)
-    expenses_df = pd.read_sql_query("SELECT amount, currency FROM expenses" + where, conn, params=params)
+    income_df = db_read_sql("SELECT amount, currency FROM income" + where, conn, params=params)
+    expenses_df = db_read_sql("SELECT amount, currency FROM expenses" + where, conn, params=params)
 
     income = sum(convert_to_usd(r['amount'], r['currency']) for _, r in income_df.iterrows())
     expenses = sum(convert_to_usd(r['amount'], r['currency']) for _, r in expenses_df.iterrows())
@@ -633,7 +779,7 @@ def get_bank_statement_data(conn, account_type=None, user_id=None):
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY txn_date DESC, id DESC"
-    return pd.read_sql_query(query, conn, params=params if params else None)
+    return db_read_sql(query, conn, params=params if params else None)
 
 
 def update_bank_statement_categories(conn, category_updates):

@@ -5,6 +5,8 @@ python-dotenv
 openpyxl
 xlrd>=2.0.1
 pdfplumber
+sqlalchemy>=2.0
+psycopg2-binary
 
 # Testing
 pytest>=8.0
