@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import pdfplumber
-from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, register_user, get_user, get_user_by_email, verify_security_answer, reset_user_password, update_user_profile, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses, save_bank_statement_rows, get_bank_statement_data, update_bank_statement_categories, delete_bank_statement_rows, migrate_add_user_id, get_all_usernames, get_last_connection_error
+from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, register_user, get_user, get_user_by_email, verify_security_answer, reset_user_password, update_user_profile, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses, save_bank_statement_rows, get_bank_statement_data, update_bank_statement_categories, delete_bank_statement_rows, migrate_add_user_id, get_all_usernames, get_last_connection_error, db_read_sql, safe_error_message
 from datetime import datetime, date as dt_date
 
 # Page config
@@ -903,13 +903,18 @@ DB_URL = os.getenv("DATABASE_URL", "finance.db")  # Use environment variable or 
 # Connect to database
 conn = create_connection(DB_URL)
 if conn:
-    create_tables(conn)
-    migrate_add_user_id(conn)
-    create_users_table(conn)
-    insert_default_users(conn)
-    # Check if data exists; if not, seed sample data attributed to the admin account
-    if pd.read_sql_query("SELECT COUNT(*) FROM income", conn).iloc[0, 0] == 0:
-        insert_sample_data(conn, user_id='admin')
+    try:
+        create_tables(conn)
+        migrate_add_user_id(conn)
+        create_users_table(conn)
+        insert_default_users(conn)
+        # Use database helper to support both SQLite and PostgreSQL connections.
+        if db_read_sql("SELECT COUNT(*) FROM income", conn).iloc[0, 0] == 0:
+            insert_sample_data(conn, user_id='admin')
+    except Exception as e:
+        st.error("Database connected but initialization failed")
+        st.caption(f"Initialization details: {safe_error_message(e)}")
+        st.stop()
 else:
     st.error("Failed to connect to database")
     db_err = get_last_connection_error()

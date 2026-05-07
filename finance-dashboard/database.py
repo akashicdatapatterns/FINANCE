@@ -35,6 +35,10 @@ def get_last_connection_error():
     return _LAST_CONNECTION_ERROR
 
 
+def safe_error_message(err):
+    return _sanitize_connection_error(err)
+
+
 class _PgConnection:
     """Thin wrapper that makes a SQLAlchemy engine behave like a sqlite3 connection
     for the limited subset of operations used in this codebase:
@@ -141,11 +145,18 @@ def create_connection(db_file):
         # requires postgresql://…
         url = db_file.replace("postgres://", "postgresql://", 1)
         try:
-            engine = create_engine(url, pool_pre_ping=True)
+            engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 10})
+            # Validate credentials/network early so app can render a clear message.
+            with engine.connect() as c:
+                c.execute(sa_text("SELECT 1"))
             return _PgConnection(engine)
         except Exception as e:
             _set_last_connection_error(e)
             print(f"PostgreSQL connection failed: {e}")
+            try:
+                engine.dispose()
+            except Exception:
+                pass
             return None
     elif db_file and db_file.startswith("postgres") and not _SQLALCHEMY_AVAILABLE:
         _set_last_connection_error("SQLAlchemy is not installed in this environment")
