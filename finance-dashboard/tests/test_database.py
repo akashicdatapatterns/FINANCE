@@ -139,9 +139,9 @@ class TestGetData:
         assert df.iloc[0]["amount"] == 1000
 
     def test_filters_by_user_id(self, conn):
-        self._insert_income(conn, 500, user_id="alice")
-        self._insert_income(conn, 800, user_id="bob")
-        df = database.get_data(conn, "income", user_id="alice")
+        self._insert_income(conn, 500, user_id=101)
+        self._insert_income(conn, 800, user_id=202)
+        df = database.get_data(conn, "income", user_id=101)
         assert len(df) == 1
         assert df.iloc[0]["amount"] == 500
 

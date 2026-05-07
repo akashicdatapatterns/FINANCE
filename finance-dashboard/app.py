@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import pdfplumber
-from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, register_user, get_user, get_user_by_email, verify_security_answer, reset_user_password, update_user_profile, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses, save_bank_statement_rows, get_bank_statement_data, update_bank_statement_categories, delete_bank_statement_rows, migrate_add_user_id, get_all_usernames, get_last_connection_error, db_read_sql, safe_error_message
+from database import create_connection, create_tables, create_users_table, insert_sample_data, insert_default_users, authenticate_user, register_user, get_user, get_user_by_email, verify_security_answer, reset_user_password, update_user_profile, import_excel_to_db, export_db_to_excel, get_data, calculate_net_worth, calculate_income_expenses, save_bank_statement_rows, get_bank_statement_data, update_bank_statement_categories, delete_bank_statement_rows, migrate_add_user_id, migrate_add_foreign_keys, get_all_users, get_last_connection_error, db_read_sql, safe_error_message
 from datetime import datetime, date as dt_date
 
 # Page config
@@ -688,7 +688,7 @@ def show_login_form(conn):
                     st.session_state.logged_in = True
                     st.session_state.username = user['username']
                     st.session_state.role = user['role']
-                    st.session_state.user_id = user['username']
+                    st.session_state.user_id = user['id']
                     st.session_state.auth_error = ""
                     st.session_state.reg_success = ""
                     maybe_rerun()
@@ -914,10 +914,13 @@ def _create_and_initialize_connection(db_url):
         create_tables(conn)
         migrate_add_user_id(conn)
         create_users_table(conn)
+        migrate_add_foreign_keys(conn)
         insert_default_users(conn)
         # Use database helper to support both SQLite and PostgreSQL connections.
         if db_read_sql("SELECT COUNT(*) FROM income", conn).iloc[0, 0] == 0:
-            insert_sample_data(conn, user_id='admin')
+            admin_user = get_user(conn, "admin")
+            admin_user_id = admin_user["id"] if admin_user else None
+            insert_sample_data(conn, user_id=admin_user_id)
     except Exception as e:
         st.error("Database connected but initialization failed")
         st.caption(f"Initialization details: {safe_error_message(e)}")
@@ -1028,10 +1031,10 @@ st.sidebar.markdown("---")
 # Admin: optionally view all users' data or a specific user's data
 is_admin = st.session_state.role == "admin"
 if is_admin:
-    all_usernames = get_all_usernames(conn)
-    view_as_options = ["All Users"] + all_usernames
-    view_as = st.sidebar.selectbox("View Data As", view_as_options, index=0)
-    user_id = None if view_as == "All Users" else view_as
+    users_df = get_all_users(conn)
+    user_options = [("All Users", None)] + [(row["username"], int(row["id"])) for _, row in users_df.iterrows()]
+    selected_label = st.sidebar.selectbox("View Data As", [opt[0] for opt in user_options], index=0)
+    user_id = dict(user_options).get(selected_label)
 else:
     user_id = st.session_state.user_id
 

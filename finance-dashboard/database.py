@@ -220,6 +220,11 @@ def _pk(conn):
     return "SERIAL PRIMARY KEY" if _is_postgres(conn) else "INTEGER PRIMARY KEY"
 
 
+def _user_id_col_type(conn):
+    """Return the user_id column type compatible with the users primary key."""
+    return "BIGINT" if _is_postgres(conn) else "INTEGER"
+
+
 def db_read_sql(sql, conn, params=None):
     """Execute a SELECT query and return a DataFrame.
 
@@ -244,6 +249,7 @@ def db_read_sql(sql, conn, params=None):
 
 def create_tables(conn):
     pk = _pk(conn)
+    user_id_type = _user_id_col_type(conn)
     sql_create_income_table = f"""
     CREATE TABLE IF NOT EXISTS income (
         id {pk},
@@ -253,7 +259,7 @@ def create_tables(conn):
         date TEXT NOT NULL,
         type TEXT NOT NULL,
         account_type TEXT DEFAULT 'personal',
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_expenses_table = f"""
@@ -264,7 +270,7 @@ def create_tables(conn):
         currency TEXT DEFAULT 'USD',
         date TEXT NOT NULL,
         account_type TEXT DEFAULT 'personal',
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_investments_table = f"""
@@ -277,7 +283,7 @@ def create_tables(conn):
         currency TEXT DEFAULT 'USD',
         date_purchased TEXT NOT NULL,
         account_type TEXT DEFAULT 'personal',
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_fixed_deposits_table = f"""
@@ -290,7 +296,7 @@ def create_tables(conn):
         maturity_value REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
         account_type TEXT DEFAULT 'personal',
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_real_estate_table = f"""
@@ -302,7 +308,7 @@ def create_tables(conn):
         rental_income REAL NOT NULL,
         currency TEXT DEFAULT 'USD',
         account_type TEXT DEFAULT 'personal',
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_cash_table = f"""
@@ -312,7 +318,7 @@ def create_tables(conn):
         currency TEXT DEFAULT 'USD',
         date TEXT NOT NULL,
         account_type TEXT DEFAULT 'personal',
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_bank_statements_table = f"""
@@ -329,7 +335,7 @@ def create_tables(conn):
         source_name TEXT,
         account_type TEXT DEFAULT 'personal',
         created_at TEXT NOT NULL,
-        user_id TEXT DEFAULT NULL
+        user_id {user_id_type} DEFAULT NULL
     );
     """
     sql_create_indexes = [
@@ -369,16 +375,82 @@ def create_tables(conn):
 def migrate_add_user_id(conn):
     """Safely add user_id column to all existing tables (no-op if already present)."""
     tables = ['income', 'expenses', 'investments', 'fixed_deposits', 'real_estate', 'cash', 'bank_statements']
+    user_id_type = _user_id_col_type(conn)
     for table in tables:
         try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT DEFAULT NULL")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id {user_id_type} DEFAULT NULL")
             conn.commit()
         except Exception:
             pass  # Column already exists
 
 
+def migrate_add_foreign_keys(conn):
+    """Add FK constraints from data tables.user_id -> users.id.
+
+    For PostgreSQL, constraints are added with ALTER TABLE and ignored when
+    already present. SQLite ALTER TABLE support for adding constraints is
+    limited, so existing SQLite databases are left unchanged.
+    """
+    if not _is_postgres(conn):
+        return
+
+    table_constraints = [
+        ("income", "fk_income_user_id"),
+        ("expenses", "fk_expenses_user_id"),
+        ("investments", "fk_investments_user_id"),
+        ("fixed_deposits", "fk_fixed_deposits_user_id"),
+        ("real_estate", "fk_real_estate_user_id"),
+        ("cash", "fk_cash_user_id"),
+        ("bank_statements", "fk_bank_statements_user_id"),
+    ]
+
+    for table_name, constraint_name in table_constraints:
+        try:
+            # Convert legacy username-based values to numeric user IDs.
+            conn.execute(
+                f"""
+                UPDATE {table_name} t
+                SET user_id = u.id
+                FROM users u
+                WHERE t.user_id IS NOT NULL
+                  AND t.user_id::text = u.username
+                """
+            )
+
+            # Ensure user_id column is numeric before creating FK to users.id.
+            conn.execute(
+                f"""
+                ALTER TABLE {table_name}
+                ALTER COLUMN user_id TYPE BIGINT
+                USING CASE
+                    WHEN user_id IS NULL THEN NULL
+                    WHEN user_id::text ~ '^[0-9]+$' THEN user_id::bigint
+                    ELSE NULL
+                END
+                """
+            )
+
+            conn.execute(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}")
+            conn.execute(
+                f"""
+                ALTER TABLE {table_name}
+                ADD CONSTRAINT {constraint_name}
+                FOREIGN KEY (user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+                """
+            )
+            conn.commit()
+        except Exception:
+            # Constraint already exists or table has incompatible data.
+            pass
+
+
+def get_all_users(conn):
+    return db_read_sql("SELECT id, username FROM users ORDER BY username", conn)
+
+
 def get_all_usernames(conn):
-    df = db_read_sql("SELECT username FROM users ORDER BY username", conn)
+    df = get_all_users(conn)
     return df['username'].tolist()
 
 
