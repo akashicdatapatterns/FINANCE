@@ -334,12 +334,21 @@ def create_tables(conn):
     """
     sql_create_indexes = [
         "CREATE INDEX IF NOT EXISTS idx_income_user_account_date ON income(user_id, account_type, date)",
+        "CREATE INDEX IF NOT EXISTS idx_income_user_account_currency ON income(user_id, account_type, currency)",
         "CREATE INDEX IF NOT EXISTS idx_expenses_user_account_date ON expenses(user_id, account_type, date)",
+        "CREATE INDEX IF NOT EXISTS idx_expenses_user_account_currency ON expenses(user_id, account_type, currency)",
         "CREATE INDEX IF NOT EXISTS idx_investments_user_account ON investments(user_id, account_type)",
+        "CREATE INDEX IF NOT EXISTS idx_investments_user_account_currency ON investments(user_id, account_type, currency)",
         "CREATE INDEX IF NOT EXISTS idx_fixed_deposits_user_account ON fixed_deposits(user_id, account_type)",
+        "CREATE INDEX IF NOT EXISTS idx_fixed_deposits_user_account_currency ON fixed_deposits(user_id, account_type, currency)",
         "CREATE INDEX IF NOT EXISTS idx_real_estate_user_account ON real_estate(user_id, account_type)",
+        "CREATE INDEX IF NOT EXISTS idx_real_estate_user_account_currency ON real_estate(user_id, account_type, currency)",
         "CREATE INDEX IF NOT EXISTS idx_cash_user_account_date ON cash(user_id, account_type, date)",
+        "CREATE INDEX IF NOT EXISTS idx_cash_user_account_currency ON cash(user_id, account_type, currency)",
         "CREATE INDEX IF NOT EXISTS idx_bank_statements_user_account_date ON bank_statements(user_id, account_type, txn_date)",
+        "CREATE INDEX IF NOT EXISTS idx_bank_statements_user_account_bank ON bank_statements(user_id, account_type, bank_name)",
+        "CREATE INDEX IF NOT EXISTS idx_bank_statements_user_account_sort ON bank_statements(user_id, account_type, txn_date, id)",
+        "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
     ]
     try:
         c = conn.cursor()
@@ -765,18 +774,19 @@ def calculate_net_worth(conn, account_type=None, user_id=None):
     def convert_to_usd(amount, currency):
         return amount / EXCHANGE_RATES.get(currency, 1.0)
 
-    where, params = build_where([], [])
-    inv_df = db_read_sql("SELECT current_value, currency FROM investments" + where, conn, params=params or None)
-    inv = sum(convert_to_usd(r['current_value'], r['currency']) for _, r in inv_df.iterrows())
+    def sum_usd_by_currency(table_name, value_col):
+        where, params = build_where([], [])
+        df = db_read_sql(
+            f"SELECT currency, COALESCE(SUM({value_col}), 0) AS total_amount FROM {table_name}{where} GROUP BY currency",
+            conn,
+            params=params or None,
+        )
+        return sum(convert_to_usd(r['total_amount'], r['currency']) for _, r in df.iterrows())
 
-    fd_df = db_read_sql("SELECT maturity_value, currency FROM fixed_deposits" + where, conn, params=params or None)
-    fd = sum(convert_to_usd(r['maturity_value'], r['currency']) for _, r in fd_df.iterrows())
-
-    re_df = db_read_sql("SELECT current_value, currency FROM real_estate" + where, conn, params=params or None)
-    re = sum(convert_to_usd(r['current_value'], r['currency']) for _, r in re_df.iterrows())
-
-    cash_df = db_read_sql("SELECT amount, currency FROM cash" + where, conn, params=params or None)
-    cash = sum(convert_to_usd(r['amount'], r['currency']) for _, r in cash_df.iterrows())
+    inv = sum_usd_by_currency("investments", "current_value")
+    fd = sum_usd_by_currency("fixed_deposits", "maturity_value")
+    re = sum_usd_by_currency("real_estate", "current_value")
+    cash = sum_usd_by_currency("cash", "amount")
 
     return inv + fd + re + cash
 
@@ -785,6 +795,14 @@ def calculate_income_expenses(conn, period='monthly', account_type=None, user_id
 
     def convert_to_usd(amount, currency):
         return amount / EXCHANGE_RATES.get(currency, 1.0)
+
+    def sum_usd_by_currency(table_name):
+        df = db_read_sql(
+            f"SELECT currency, COALESCE(SUM(amount), 0) AS total_amount FROM {table_name}{where} GROUP BY currency",
+            conn,
+            params=params,
+        )
+        return sum(convert_to_usd(r['total_amount'], r['currency']) for _, r in df.iterrows())
 
     now = datetime.now()
     if period == 'monthly':
@@ -804,11 +822,8 @@ def calculate_income_expenses(conn, period='monthly', account_type=None, user_id
         params.append(user_id)
     where = " WHERE " + " AND ".join(conditions)
 
-    income_df = db_read_sql("SELECT amount, currency FROM income" + where, conn, params=params)
-    expenses_df = db_read_sql("SELECT amount, currency FROM expenses" + where, conn, params=params)
-
-    income = sum(convert_to_usd(r['amount'], r['currency']) for _, r in income_df.iterrows())
-    expenses = sum(convert_to_usd(r['amount'], r['currency']) for _, r in expenses_df.iterrows())
+    income = sum_usd_by_currency("income")
+    expenses = sum_usd_by_currency("expenses")
 
     savings_rate = ((income - expenses) / income * 100) if income > 0 else 0
     return income, expenses, savings_rate
