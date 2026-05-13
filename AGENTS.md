@@ -25,7 +25,7 @@ pytest
 - `conftest.py` provides `conn` (empty in-memory SQLite) and `conn_with_users` (with default users) fixtures
 - `test_database.py` — auth, registration, `get_data`, `calculate_net_worth`
 - `test_utils.py` — `convert_currency`, `format_currency`, `categorize_transaction`, `to_numeric_series`, `parse_mixed_date_series`
-- `app.py` uses `st.*` at module level — tests stub the entire `streamlit` module via `sys.modules` in `conftest.py` before importing; follow this pattern for any new `app.py` tests
+- `app.py` uses `st.*` at module level — tests stub the entire `streamlit` module via `sys.modules` in `test_utils.py` before importing `app`; follow this pattern for any new `app.py` tests
 
 ## Project Structure
 
@@ -128,6 +128,7 @@ Copy `.env.example` → `.env` (never commit `.env`):
 
 - **`PRAGMA busy_timeout = 30000`** is set in `create_connection()` — do not remove; prevents SQLite lock errors on Streamlit reruns.
 - **Exchange rates are hardcoded** in three places: `EXCHANGE_RATES` in `app.py` (top-level constant) and inside `calculate_net_worth()` and `calculate_income_expenses()` in `database.py` — all three must be updated together when rates change. Last synced 2026-05-04 (EUR: 0.8537, INR: 95.11).
+- **Workspace root has an empty `app.py`** — the actual Streamlit app entrypoint is `finance-dashboard/app.py`.
 - **Streamlit reruns entire script** on any interaction — use `st.session_state` to preserve state; call `maybe_rerun()` instead of `st.rerun()` directly.
 - **`finance.db` is local** — won't persist on stateless cloud hosts without `DATABASE_URL`.
 - **Excel import stops on first sheet error** — user won't know which sheet failed; validate column names match expected schema before import.
