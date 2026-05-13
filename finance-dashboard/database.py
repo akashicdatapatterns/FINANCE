@@ -202,7 +202,7 @@ def create_connection(db_file):
     # SQLite path (default)
     conn = None
     try:
-        conn = sqlite3.connect(db_file)
+        conn = sqlite3.connect(db_file, check_same_thread=False)
         conn.execute("PRAGMA busy_timeout = 30000")
     except sqlite3.Error as e:
         _set_last_connection_error(e)

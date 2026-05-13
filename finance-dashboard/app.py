@@ -40,6 +40,27 @@ def format_currency(amount, currency):
     return f"{symbol}{amount:,.2f}"
 
 
+PAGE_EMOJIS = {
+    "Overview": "🏠",
+    "Income Tracking": "💰",
+    "Expenses Tracking": "🧾",
+    "Investments": "📈",
+    "Fixed Deposits": "🏦",
+    "Real Estate": "🏡",
+    "Fund Allocation": "🪙",
+    "Insights": "🔎",
+    "Filters": "🎛️",
+    "Upload": "📤",
+    "Cash": "💵",
+    "Bank Statement Loading": "🏛️",
+    "Bank Insights": "📊",
+}
+
+
+def emoji_label(label):
+    return f"{PAGE_EMOJIS.get(label, '✨')} {label}"
+
+
 def apply_designer_ui():
     st.markdown(
         """
@@ -673,7 +694,7 @@ def logout():
 
 
 def show_login_form(conn):
-    st.title("Finance Dashboard")
+    st.title("💳 Finance Dashboard")
     login_tab, register_tab, forgot_tab = st.tabs(["Login", "Create Account", "Forgot Password"])
 
     # -- LOGIN --------------------------------------------------------------
@@ -947,7 +968,7 @@ if not st.session_state.logged_in:
 
 apply_designer_ui()
 
-st.sidebar.title("Filters & Controls")
+st.sidebar.title("⚙️ Filters & Controls")
 st.sidebar.write(f"Logged in as **{st.session_state.username}** ({st.session_state.role})")
 show_profile_editor(conn)
 
@@ -968,10 +989,10 @@ NAV_PAGES = [
     "Bank Insights",
 ]
 
-with st.sidebar.expander("☰  Dashboard", expanded=False):
+with st.sidebar.expander("📊 Dashboard", expanded=False):
     for _page in NAV_PAGES:
         _active = st.session_state.selected_page == _page
-        _label = f"{'▶ ' if _active else '   '}{_page}"
+        _label = f"{'▶ ' if _active else '   '}{emoji_label(_page)}"
         if st.button(_label, key=f"nav_{_page}", use_container_width=True):
             st.session_state.selected_page = _page
             st.rerun()
@@ -1047,10 +1068,10 @@ display_currency = st.sidebar.selectbox("Display Currency", ["USD", "EUR", "INR"
 selected_page = st.session_state.selected_page
 
 # Main title
-st.title("Personal Finance Dashboard")
+st.title("💼 Personal Finance Dashboard")
 
 if selected_page == "Overview":
-    st.header(f"{mode} Overview")
+    st.header(f"🏠 {mode} Overview")
     col1, col2, col3, col4 = st.columns(4)
     net_worth = calculate_net_worth(conn, account_type, user_id=user_id)
     income, expenses, savings_rate = calculate_income_expenses(conn, period.lower(), account_type, user_id=user_id)
@@ -1070,7 +1091,7 @@ if selected_page == "Overview":
         st.metric("Savings Rate", f"{savings_rate:.2f}%")
 
 if selected_page == "Income Tracking":
-    st.header(f"{mode} Income Tracking")
+    st.header(f"💰 {mode} Income Tracking")
     income_df = get_data(conn, "income", account_type=account_type, user_id=user_id)
     if not income_df.empty:
         income_df['date'] = pd.to_datetime(income_df['date'])
@@ -1107,7 +1128,7 @@ if selected_page == "Income Tracking":
         st.write("No income data available")
 
 if selected_page == "Expenses Tracking":
-    st.header(f"{mode} Expenses Tracking")
+    st.header(f"🧾 {mode} Expenses Tracking")
     expenses_df = get_data(conn, "expenses", account_type=account_type, user_id=user_id)
     if not expenses_df.empty:
         expenses_df['date'] = pd.to_datetime(expenses_df['date'])
@@ -1143,7 +1164,7 @@ if selected_page == "Expenses Tracking":
         st.write("No expenses data available")
 
 if selected_page == "Investments":
-    st.header(f"{mode} Investments")
+    st.header(f"📈 {mode} Investments")
     inv_df = get_data(conn, "investments", account_type=account_type, user_id=user_id)
     if not inv_df.empty:
         inv_df['profit_loss'] = inv_df['current_value'] - inv_df['invested_amount']
@@ -1171,7 +1192,7 @@ if selected_page == "Investments":
         st.plotly_chart(fig2)
 
 if selected_page == "Fixed Deposits":
-    st.header(f"{mode} Fixed Deposits")
+    st.header(f"🏦 {mode} Fixed Deposits")
     fd_df = get_data(conn, "fixed_deposits", account_type=account_type, user_id=user_id)
     if not fd_df.empty:
         display_df = fd_df.copy()
@@ -1195,7 +1216,7 @@ if selected_page == "Fixed Deposits":
             st.dataframe(upcoming_display[['bank', 'maturity_date', 'maturity_value_display', 'currency']])
 
 if selected_page == "Real Estate":
-    st.header(f"{mode} Real Estate")
+    st.header(f"🏡 {mode} Real Estate")
     re_df = get_data(conn, "real_estate", account_type=account_type, user_id=user_id)
     if not re_df.empty:
         re_df['roi'] = ((re_df['current_value'] - re_df['purchase_price']) / re_df['purchase_price']) * 100
@@ -1214,7 +1235,7 @@ if selected_page == "Real Estate":
         st.metric("Total Rental Income", format_currency(total_income, display_currency))
 
 if selected_page == "Fund Allocation":
-    st.header(f"{mode} Fund Allocation")
+    st.header(f"🪙 {mode} Fund Allocation")
     # Calculate allocations
     inv_df = get_data(conn, "investments", account_type=account_type, user_id=user_id)
     fd_df = get_data(conn, "fixed_deposits", account_type=account_type, user_id=user_id)
@@ -1243,7 +1264,7 @@ if selected_page == "Fund Allocation":
     st.plotly_chart(fig)
 
 if selected_page == "Insights":
-    st.header(f"{mode} Insights & Analytics")
+    st.header(f"🔎 {mode} Insights & Analytics")
     # Simple insights
     income, expenses, savings_rate = calculate_income_expenses(conn, 'monthly', account_type, user_id=user_id)
     if savings_rate < 20:
@@ -1273,7 +1294,7 @@ if selected_page == "Insights":
         st.plotly_chart(fig)
 
 if selected_page == "Filters":
-    st.header(f"{mode} Filters & Data View")
+    st.header(f"🎛️ {mode} Filters & Data View")
     
     # Apply filters
     if category_filter == "All":
@@ -1388,7 +1409,7 @@ if selected_page == "Filters":
             st.write("No real estate data available")
 
 if selected_page == "Upload":
-    st.header("Bulk Excel Upload")
+    st.header("📤 Bulk Excel Upload")
     st.write("Upload a `.xlsx` workbook with sheets named `income`, `expenses`, `investments`, `fixed_deposits`, `real_estate`, and `cash`.")
     st.markdown("**Required columns per sheet:**")
     st.markdown(
@@ -1434,7 +1455,7 @@ if selected_page == "Upload":
         st.error(f"Unable to create export file: {exc}")
 
 if selected_page == "Cash":
-    st.header(f"{mode} Cash Holdings")
+    st.header(f"💵 {mode} Cash Holdings")
     cash_df = get_data(conn, "cash", account_type=account_type, user_id=user_id)
     if not cash_df.empty:
         display_df = cash_df.copy()
@@ -1449,7 +1470,7 @@ if selected_page == "Cash":
         st.write("No cash data available")
 
 if selected_page == "Bank Statement Loading":
-    st.header("Bank Statement Loading")
+    st.header("🏛️ Bank Statement Loading")
     st.write("Load a complete bank statement file, review full data, map columns, validate, and save to the database table.")
 
     bank_name = st.text_input("Bank Name", placeholder="e.g. HDFC, SBI, ICICI", key="bs_bank_name")
@@ -1612,7 +1633,7 @@ if selected_page == "Bank Statement Loading":
             st.error(f"Unable to analyze bank statement: {exc}")
 
 if selected_page == "Bank Insights":
-    st.header("Bank Insights")
+    st.header("📊 Bank Insights")
     st.write("Filter and analyze bank statement rows saved in the database table.")
 
     saved_df = get_bank_statement_data(conn, account_type=account_type, user_id=user_id)
@@ -1784,7 +1805,7 @@ page_to_entry_type = {
 entry_type = page_to_entry_type.get(selected_page)
 if entry_type:
     st.markdown("---")
-    st.subheader(f"Manage {entry_type}")
+    st.subheader(f"🛠️ Manage {entry_type}")
     action_mode = st.radio(
         "Choose action",
         ["Add New", "Edit or Delete Existing"],
